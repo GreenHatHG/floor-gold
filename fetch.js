@@ -1,9 +1,49 @@
 #!/usr/bin/env node
-// Batch-fetch linux.do JSON through the already-logged-in Chrome, dump to data/raw/, print a tiny manifest.
-// Usage: node fetch.js <url> [url...]     |     node fetch.js --file urls.txt
-// Options: --batch=20  --session=chrome  --rate=2/3000  --conc=2
-//
-// This script judges nothing. It fetches, saves, and reports. Picking what to fetch is the agent's job.
+// Batch-fetch linux.do JSON through the logged-in Chrome. Saves under data/raw/, judges nothing.
+// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
+const HELP_SHORT = `fetch.js — fetch linux.do JSON through your logged-in Chrome, save under data/raw/.
+
+It judges nothing. Picking what to fetch is the agent's job.
+
+Usage:
+  node fetch.js <url> [url...]
+  node fetch.js --file urls.txt
+  node fetch.js --batch 10 --rate 2/4000
+  node fetch.js -h              this summary
+  node fetch.js --help          where each URL lands, plus the traps
+
+Options:
+  --file FILE       read one URL per line; blank lines and # comments are skipped
+  --batch 20        URLs per playwright-cli call (default 20)
+  --rate 2/3000     2 requests per 3000 ms (default). Only raise it with proof.
+  --conc 2          requests in flight at once (default 2)
+  --session chrome  playwright-cli session name (default chrome)
+  --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
+
+Exit codes: 0 all saved · 1 some failed, see data/todo.txt · 2 bad arguments
+
+429/403 is Cloudflare, not a rate limit. Wait a few minutes, rerun the same command.
+`;
+
+const HELP = HELP_SHORT + `
+Where each URL lands (the same URL always lands in the same file):
+  /t/<id>.json, /t/<id>/posts.json     data/raw/topic/<id>.json      merged by post id
+  /t/<id>/post_ids.json?post_number=N  data/raw/ids/<id>-at-<N>.json
+  /search.json?q=...&page=N            data/raw/search/<q>[-pN].json
+  /c/<id>/l/latest.json                data/raw/list/c<id>[-pN].json
+  /tag/<tag>.json                      data/raw/tag/<tag>.json
+  /latest, /top, /new, ...             data/raw/site/<name>[-<period>][-pN].json
+  anything else                        data/raw/other/<path>-<hash>.json
+  <q> and <tag> are filenames, so punctuation inside them gets a short hash suffix.
+  An existing topic file is merged, never replaced, and every write is atomic. The one
+  exception: a corrupt old file is overwritten, after a warning.
+
+Two traps behind the 429 rule above, for whoever edits this script:
+  - Chrome slows timers in background tabs, so the limiter takes a slot and sleeps exactly.
+    It never polls on a short interval, or 20 requests take 157 seconds.
+  - A 200 is not proof a post exists. A shape check guards data/notes.jsonl, so an error
+    body cannot be remembered as "post deleted".
+`;
 
 const fs = require("fs");
 const path = require("path");
@@ -15,15 +55,30 @@ const RAW = path.join(ROOT, "data", "raw");
 const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
 const rawArgs = process.argv.slice(2);
-const args = [];
-const opts = {};
-for (let i = 0; i < rawArgs.length; i++) {
-  const a = rawArgs[i];
-  if (!a.startsWith("--")) { args.push(a); continue; }
-  const eq = a.indexOf("=");
-  if (eq > -1) opts[a.slice(2, eq)] = a.slice(eq + 1);
-  else if (rawArgs[i + 1] && !rawArgs[i + 1].startsWith("--")) opts[a.slice(2)] = rawArgs[++i];
-  else opts[a.slice(2)] = true;
+if (rawArgs.includes("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+if (rawArgs.includes("-h")) {
+  console.log(HELP_SHORT);
+  process.exit(0);
+}
+const { parseArgs, UsageError } = require("./lib");
+let opts = {};
+let args = [];
+try {
+  ({ opts, args } = parseArgs(rawArgs, {
+    file: "value",
+    batch: "value",
+    conc: "value",
+    rate: "value",
+    session: "value",
+  }));
+} catch (e) {
+  if (!(e instanceof UsageError)) throw e;
+  console.error(e.message);
+  console.error("Full contract: node fetch.js -h");
+  process.exit(2);
 }
 const opt = (name, dflt) => (name in opts ? opts[name] : dflt);
 const num = (name, dflt, min) => {
@@ -62,7 +117,8 @@ const normalize = (u) => u.replace(/^https?:\/\/linux\.do/, "") || "/";
 
 urls = [...new Set(urls.map(normalize))];
 if (!urls.length) {
-  console.error("no urls. try: node fetch.js '/search.json?q=招聘'");
+  console.error(HELP_SHORT);
+  console.error("Full contract: node fetch.js --help");
   process.exit(2);
 }
 

@@ -1,11 +1,40 @@
 #!/usr/bin/env node
-// Turn one raw topic file into a short readable digest, so the chat never has to swallow 200KB of JSON.
-// Usage:
-//   node digest.js 2881282              all fetched posts, 200 chars each
-//   node digest.js 2881282 --new        only posts past the read cursor
-//   node digest.js 2881282 --from=40    start at post number 40
-//   node digest.js 2881282 --chars=600  longer snippets
-//   node digest.js 2881282 --full=43    full text of post 43 only
+// Turn one raw topic file into a short readable digest. Never fetches.
+// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
+const HELP_SHORT = `digest.js — turn one local topic file into a short text digest. Never fetches.
+
+One topic file is 50 to 200 KB of JSON. This prints a few hundred chars per post instead, so
+the chat never has to swallow the whole thing.
+
+Usage:
+  node digest.js <topic_id|path.json>
+  node digest.js 2881282 --new
+  node digest.js 2881282 --from 40 --chars 600
+  node digest.js -h              this summary
+  node digest.js --help          the other examples, and the header
+
+Options:
+  --new        only posts after your read_upto cursor in data/index.jsonl
+  --from N     start at post number N (default 0)
+  --chars 200  chars per post, min 20 (default 200)
+  --full N     print the whole text of post N and stop
+  --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
+
+Output: one line per post, #number user date text
+
+Exit codes: 0 ok · 1 no local copy or no such post · 2 bad arguments
+`;
+
+const HELP = HELP_SHORT + `
+More examples:
+  node digest.js 2881282 --full 43    the full text of post 43 only
+
+The header shows title, post count, the highest post number when it differs from the count
+(a delete makes them differ), missing post numbers, last reply date, how far you already
+read, and your last verdict from data/index.jsonl.
+
+No local copy means fetch first: node fetch.js "/t/<id>.json"
+`;
 
 const fs = require("fs");
 const path = require("path");
@@ -14,11 +43,27 @@ const ROOT = __dirname;
 const RAW = path.join(ROOT, "data", "raw");
 const INDEX = path.join(ROOT, "data", "index.jsonl");
 
+const { parseArgs, UsageError } = require("./lib");
 const argv = process.argv.slice(2);
-const opt = (n, d) => {
-  const hit = argv.find((a) => a.startsWith(`--${n}=`));
-  return hit ? hit.slice(n.length + 3) : d;
-};
+if (argv.includes("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+if (argv.includes("-h")) {
+  console.log(HELP_SHORT);
+  process.exit(0);
+}
+let opts = {};
+let rest = [];
+try {
+  ({ opts, args: rest } = parseArgs(argv, { new: "flag", from: "value", chars: "value", full: "value" }));
+} catch (e) {
+  if (!(e instanceof UsageError)) throw e;
+  console.error(e.message);
+  console.error("Full contract: node digest.js -h");
+  process.exit(2);
+}
+const opt = (n, d) => (n in opts ? opts[n] : d);
 const num = (n, d, min) => {
   const raw = opt(n, d);
   const v = Number(raw);
@@ -28,12 +73,12 @@ const num = (n, d, min) => {
   }
   return v;
 };
-const flag = (n) => argv.includes(`--${n}`);
-const rest = argv.filter((a) => !a.startsWith("--"));
+const flag = (n) => !!opts[n];
 
 const target = rest[0];
 if (!target) {
-  console.error("usage: node digest.js <topic_id|path-to-json> [--new] [--from=N] [--chars=N] [--full=N]");
+  console.error(HELP_SHORT);
+  console.error("Full contract: node digest.js --help");
   process.exit(2);
 }
 

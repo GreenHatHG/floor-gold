@@ -1,16 +1,53 @@
 #!/usr/bin/env node
-// Compare what we already have on disk with what the server says, and print only the gaps.
-// Usage:
-//   node pending.js               human summary
-//   node pending.js --urls        only the URLs to fetch ( > urls.txt, then fetch.js --file urls.txt )
-//   node pending.js --urls --include-new   also queue topics we never opened
-//   node pending.js --top=50      how many new topics to list (default 25)
-//
-// Rules this script exists to remember:
-//   - posts_count lies when a post was deleted; highest_post_number does not.
-//   - /post_ids.json?post_number=N returns posts AFTER N, never N itself.
-//   - an ids table is only proof about the moment it was fetched, so the tail is never trusted twice
-//     at the same server height (that is what data/notes.jsonl "asked" rows are for).
+// Compare data/raw/ with what the server reports, print only the gaps. Never hits the network.
+// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
+const HELP_SHORT = `pending.js — diff data/raw/ against what the server reports, print only the gaps.
+
+Never talks to the network. Topic files remember their own highest post number; the search
+and list files we already fetched say what the server thinks. This prints the difference.
+
+Usage:
+  node pending.js                         human summary
+  node pending.js --urls                  only the URLs to fetch, one per line
+  node pending.js --urls --include-new    also queue threads you never opened
+  node pending.js -h                      this summary
+  node pending.js --help                  files, notes.jsonl, summary marks
+
+Options:
+  --urls          print URLs only, for a file:
+                    node pending.js --urls > urls.txt && node fetch.js --file urls.txt
+  --include-new   include threads from a feed that were never opened (off by default)
+  --top 25        how many never-opened threads to list (default 25)
+  --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
+
+Exit codes: 0 ok · 2 bad arguments, for example --top 0
+`;
+
+const HELP = HELP_SHORT + `
+Summary marks:
+  [跳过] you marked it skip or noise    [已判] judged, not skipped
+  新楼 new replies    补洞 a gap inside posts you already hold
+  (等楼号表) the id table must come back first; those posts are fetched on the next run
+
+Reads:
+  data/raw/{topic,search,list,tag,site}/*.json
+  data/raw/ids/*.json  the post number tables that say which holes are already explained
+  data/index.jsonl    one judgement per line, the last line wins
+  data/notes.jsonl    bookkeeping rows, see Writes
+
+Writes:
+  data/notes.jsonl only, plus one delete: a stale ids table (data/raw/ids/...) is removed so
+  the next run must ask the server again. Two row kinds in notes:
+    {t:"asked", id, anchor, high}   asked for posts above anchor, server was at high, nothing new
+    {t:"missing", id, pid:[...]}    the server says these posts are gone, stop asking
+
+Why it is not simpler (keep these rules):
+  - posts_count lies after a delete; highest_post_number does not.
+  - /post_ids.json?post_number=N returns posts AFTER N, never N itself.
+  - An id table only proves the moment it was fetched. So a tail is asked again whenever the
+    server's highest post number moved, or a reply landing after a delete stays invisible.
+  - A hole is asked once. If nothing comes back, it is a deleted post and is remembered.
+`;
 
 const fs = require("fs");
 const path = require("path");
@@ -20,18 +57,33 @@ const RAW = path.join(ROOT, "data", "raw");
 const INDEX = path.join(ROOT, "data", "index.jsonl");
 const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
+const { parseArgs, UsageError } = require("./lib");
 const argv = process.argv.slice(2);
-const opt = (n, d) => {
-  const hit = argv.find((a) => a.startsWith(`--${n}=`));
-  return hit ? hit.slice(n.length + 3) : d;
-};
-const urlsOnly = argv.includes("--urls");
-const includeNew = argv.includes("--include-new");
+if (argv.includes("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+if (argv.includes("-h")) {
+  console.log(HELP_SHORT);
+  process.exit(0);
+}
+let opts = {};
+try {
+  ({ opts } = parseArgs(argv, { urls: "flag", "include-new": "flag", top: "value" }));
+} catch (e) {
+  if (!(e instanceof UsageError)) throw e;
+  console.error(e.message);
+  console.error("Full contract: node pending.js -h");
+  process.exit(2);
+}
+const opt = (n, d) => (n in opts ? opts[n] : d);
+const urlsOnly = !!opts.urls;
+const includeNew = !!opts["include-new"];
 const TOP = (() => {
-  const hit = argv.find((a) => a.startsWith("--top="));
-  const v = hit ? Number(hit.slice(6)) : 25;
+  const raw = opt("top", 25);
+  const v = Number(raw);
   if (!Number.isFinite(v) || v < 1) {
-    console.error(`--top must be a number >= 1, got: ${hit ? hit.slice(6) : ""}`);
+    console.error(`--top must be a number >= 1, got: ${raw}`);
     process.exit(2);
   }
   return v;

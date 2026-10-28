@@ -32,7 +32,7 @@ node pending.js --urls --include-new > urls.txt && node fetch.js --file urls.txt
 
 ## Backfilling history
 
-Slice by week, newest to oldest. When a window hits 50 results it queues the next page by itself, and stops when there is no next page.
+Slice by week, oldest to newest. When a window hits 50 results it queues the next page by itself, and stops when there is no next page.
 
 ```bash
 node search.js 招聘 --since=2025-01-01 > urls.txt   # first check how many there are
@@ -50,7 +50,20 @@ If it dies, run the same command again. Windows you already fetched are skipped.
 | `pending.js` | Compares disk against server, lists only the gaps | Score or rank by relevance |
 | `digest.js` | One thread → a few hundred words of summary | Write anything to disk |
 
-`lib.js` holds one naming rule shared by two scripts. If that rule forks, the cache either re-downloads forever or never resumes.
+`lib.js` holds the naming rule shared by the scripts, and the one option parser they all use. If either forks, the cache either re-downloads forever or never resumes.
+
+Every script explains itself. Read the contract from the tool, not from the code. Two levels, same as `rg`:
+
+```bash
+node fetch.js -h        # short: usage, options, exit codes
+node fetch.js --help    # full: the same, plus disk paths and the traps
+```
+
+Start with `-h`. Run `--help` only when you need to know where a file lands, or why a run stopped.
+Running a script with a required arg missing prints the short help and exits 2.
+
+Options take a space: `--top 30`. `--top=30` works too. An unknown option is an error, not ignored —
+that is why a typo stops instead of quietly doing the wrong thing.
 
 ## Disk layout
 

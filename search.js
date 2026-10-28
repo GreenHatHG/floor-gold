@@ -1,31 +1,74 @@
 #!/usr/bin/env node
-// Work out which search URLs still need fetching, and print them one per line for fetch.js.
-// Usage:
-//   node search.js 招聘 内推 招人                    full history, week by week
-//   node search.js 招聘 --new                        only the last 2 weeks
-//   node search.js 招聘 --since=2025-01-01
-//   node search.js 招聘 > urls.txt && node fetch.js --file urls.txt
-//
-// Resumes from disk: a window is "done" when its file exists. A window that came back with a
-// full page of 50 gets its next page queued, so nothing is lost to the 50-per-page cap.
-//
-// Do NOT add order:latest. Measured: it re-ranks by recency and weak matches crowd out real ones
-// ("内推" 39 hits -> 1 hit). Plain keyword + after:/before: keeps relevance.
+// Work out which search windows are still missing, print one URL per line for fetch.js. Sends nothing.
+// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
+const HELP_SHORT = `search.js — work out which search windows are missing, print one URL per line.
+
+Usage:
+  node search.js 招聘 招人                     full history, week by week
+  node search.js 招聘 --new                    only the last two weeks
+  node search.js 招聘 --since 2025-01-01
+  node search.js 招聘 > urls.txt && node fetch.js --file urls.txt
+  node search.js -h                            this summary
+  node search.js --help                        paging rules, what it prints
+
+Arguments:
+  term...        one or more keywords, one window per week. Quote a term with a space.
+                 Weak keyword? add a category word: node search.js "内推 #非我莫属"
+
+Options:
+  --new          only the last 2 weeks, skip older history
+  --since DATE   backfill from DATE (default 2023-01-01). Windows run oldest to newest.
+  --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
+
+Exit codes: 0 ok · 2 no keyword, or a bad date
+
+Never add order:latest: it re-ranks by recency, weak matches crowd out real ones.
+`;
+
+const HELP = HELP_SHORT + `
+What it prints:
+  stdout  the URLs to fetch, one per line, oldest window first
+  stderr  a stats line, plus the pipe-it-into-fetch.js hint
+
+Sends no request. A window is one keyword and one week, and it is done when its file
+already exists, so stopping and rerunning costs nothing.
+
+How paging works:
+  - page=1 is the first page, same as no page. Paging starts at 2, so nothing is fetched twice.
+  - A window that came back with 50 hits gets its next page queued, up to page 40.
+  - The order:latest warning above is measured, not a hunch: "内推" got 39 hits with the plain
+    keyword and 1 hit with order:latest.
+`;
 
 const fs = require("fs");
 const path = require("path");
-const { searchFile } = require("./lib");
+const { searchFile, parseArgs, UsageError } = require("./lib");
 
 const RAW = path.join(__dirname, "data", "raw");
 const argv = process.argv.slice(2);
-const opt = (n, d) => {
-  const hit = argv.find((a) => a.startsWith(`--${n}=`));
-  return hit ? hit.slice(n.length + 3) : d;
-};
-const terms = argv.filter((a) => !a.startsWith("--"));
+if (argv.includes("--help")) {
+  console.log(HELP);
+  process.exit(0);
+}
+if (argv.includes("-h")) {
+  console.log(HELP_SHORT);
+  process.exit(0);
+}
+let opts = {};
+let terms = [];
+try {
+  ({ opts, args: terms } = parseArgs(argv, { new: "flag", since: "value" }));
+} catch (e) {
+  if (!(e instanceof UsageError)) throw e;
+  console.error(e.message);
+  console.error("Full contract: node search.js -h");
+  process.exit(2);
+}
+const opt = (n, d) => (n in opts ? opts[n] : d);
 
 if (!terms.length) {
-  console.error("usage: node search.js <term> [term...] [--new] [--since=YYYY-MM-DD]");
+  console.error(HELP_SHORT);
+  console.error("Full contract: node search.js --help");
   process.exit(2);
 }
 
@@ -48,7 +91,7 @@ const since = (() => {
   }
   return d;
 })();
-const newOnly = argv.includes("--new");
+const newOnly = !!opts.new;
 
 const readTopics = (q, page) => {
   const f = path.join(RAW, searchFile(q, page));

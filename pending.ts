@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 // Compare data/raw/ with what the server reports, print only the gaps. Never hits the network.
 // The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
-const HELP_SHORT = `pending.js — diff data/raw/ against what the server reports, print only the gaps.
+const HELP_SHORT = `pending.ts — diff data/raw/ against what the server reports, print only the gaps.
 
 Never talks to the network. Topic files remember their own highest post number; the search
 and list files we already fetched say what the server thinks. This prints the difference.
 
 Usage:
-  node pending.js                         human summary
-  node pending.js --urls                  only the URLs to fetch, one per line
-  node pending.js --urls --include-new    also queue threads you never opened
-  node pending.js -h                      this summary
-  node pending.js --help                  files, notes.jsonl, summary marks
+  node dist/pending.js                         human summary
+  node dist/pending.js --urls                  only the URLs to fetch, one per line
+  node dist/pending.js --urls --include-new    also queue threads you never opened
+  node dist/pending.js -h                      this summary
+  node dist/pending.js --help                  files, notes.jsonl, summary marks
 
 Options:
   --urls          print URLs only, for a file:
-                    node pending.js --urls > urls.txt && node fetch.js --file urls.txt
+                    node dist/pending.js --urls > urls.txt && node dist/fetch.js --file urls.txt
   --include-new   include threads from a feed that were never opened (off by default)
   --top 25        how many never-opened threads to list (default 25)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
@@ -49,15 +49,26 @@ Why it is not simpler (keep these rules):
   - A hole is asked once. If nothing comes back, it is a deleted post and is remembered.
 `;
 
-const fs = require("fs");
-const path = require("path");
+import fs from "node:fs";
+import path from "node:path";
+import {
+  parseArgs,
+  UsageError,
+  type FeedDoc,
+  type FeedTopic,
+  type IdsDoc,
+  type IndexRow,
+  type NoteRow,
+  type Opts,
+  type TopicDoc,
+} from "./lib";
 
-const ROOT = __dirname;
+// dist/ holds the built files; data/ stays at the repo root next to it.
+const ROOT = path.join(__dirname, "..");
 const RAW = path.join(ROOT, "data", "raw");
 const INDEX = path.join(ROOT, "data", "index.jsonl");
 const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
-const { parseArgs, UsageError } = require("./lib");
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
   console.log(HELP);
@@ -67,16 +78,19 @@ if (argv.includes("-h")) {
   console.log(HELP_SHORT);
   process.exit(0);
 }
-let opts = {};
+let opts: Opts = {};
 try {
   ({ opts } = parseArgs(argv, { urls: "flag", "include-new": "flag", top: "value" }));
 } catch (e) {
   if (!(e instanceof UsageError)) throw e;
   console.error(e.message);
-  console.error("Full contract: node pending.js -h");
+  console.error("Full contract: node dist/pending.js -h");
   process.exit(2);
 }
-const opt = (n, d) => (n in opts ? opts[n] : d);
+const opt = (n: string, dflt: string | number): string => {
+  const v = opts[n];
+  return typeof v === "string" ? v : String(dflt);
+};
 const urlsOnly = !!opts.urls;
 const includeNew = !!opts["include-new"];
 const TOP = (() => {
@@ -89,26 +103,29 @@ const TOP = (() => {
   return v;
 })();
 
-const ls = (d) => {
+const ls = (d: string): string[] => {
   const p = path.join(RAW, d);
   if (!fs.existsSync(p)) return [];
-  return fs.readdirSync(p).filter((f) => f.endsWith(".json")).map((f) => path.join(p, f));
+  return fs
+    .readdirSync(p)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => path.join(p, f));
 };
-const readJson = (f) => {
+const readJson = <T>(f: string): T | null => {
   try {
-    return JSON.parse(fs.readFileSync(f, "utf8"));
+    return JSON.parse(fs.readFileSync(f, "utf8")) as T;
   } catch {
     return null;
   }
 };
 
-function readIndex() {
-  const out = new Map();
+function readIndex(): Map<number, IndexRow> {
+  const out = new Map<number, IndexRow>();
   if (!fs.existsSync(INDEX)) return out;
   for (const line of fs.readFileSync(INDEX, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
-      const row = JSON.parse(line);
+      const row = JSON.parse(line) as IndexRow;
       if (row && row.id != null) out.set(Number(row.id), Object.assign(out.get(Number(row.id)) || {}, row));
     } catch {}
   }
@@ -120,25 +137,31 @@ const idx = readIndex();
 //   {t:"missing", id, pid:[]}  server said these post ids do not exist -> stop asking
 //   {t:"asked",   id, anchor, high}  we already asked for ids above `anchor` while the server
 //                                   claimed `high` -> nothing new came back, do not ask again
-const asked = new Map();
-const missing = new Set();
+const asked = new Map<string, number>();
+const missing = new Set<string>();
 if (fs.existsSync(NOTES)) {
   for (const line of fs.readFileSync(NOTES, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
-      const row = JSON.parse(line);
+      const row = JSON.parse(line) as NoteRow;
       if (row.t === "missing" && row.id != null) for (const p of row.pid || []) missing.add(`${row.id}:${p}`);
       if (row.t === "asked" && row.id != null) asked.set(`${row.id}:${row.anchor}`, Number(row.high));
     } catch {}
   }
 }
-const noteRows = [];
+const noteRows: NoteRow[] = [];
 
 // ---- what we have locally ----
-const local = new Map();
-const knownIds = new Set();
+interface LocalTopic {
+  title?: string;
+  nums: number[];
+  max: number;
+  highest: number;
+}
+const local = new Map<number, LocalTopic>();
+const knownIds = new Set<string>();
 for (const f of ls("topic")) {
-  const t = readJson(f);
+  const t = readJson<TopicDoc>(f);
   if (!t || t.id == null) continue;
   const posts = (t.post_stream && t.post_stream.posts) || [];
   const nums = posts.map((p) => p.post_number).sort((a, b) => a - b);
@@ -152,14 +175,20 @@ for (const f of ls("topic")) {
 }
 
 // ---- what the server said, from any list or search we already fetched ----
-const server = new Map();
+interface ServerTopic {
+  title?: string;
+  highest: number;
+  last: string | null;
+  category_id?: number;
+}
+const server = new Map<number, ServerTopic>();
 const feeds = [...ls("search"), ...ls("list"), ...ls("tag"), ...ls("site")];
 for (const f of feeds) {
-  const doc = readJson(f);
-  const topics = (doc && doc.topics) || (doc && doc.topic_list && doc.topic_list.topics) || [];
+  const doc = readJson<FeedDoc>(f);
+  const topics: FeedTopic[] = (doc && doc.topics) || (doc && doc.topic_list && doc.topic_list.topics) || [];
   for (const t of topics) {
     if (!t || t.id == null) continue;
-    const prev = server.get(Number(t.id)) || {};
+    const prev = server.get(Number(t.id)) || { highest: 0, last: null };
     server.set(Number(t.id), {
       title: t.title || prev.title,
       highest: Math.max(prev.highest || 0, t.highest_post_number || t.posts_count || 0),
@@ -169,13 +198,14 @@ for (const f of feeds) {
   }
 }
 
-const md = (iso) => {
+const md = (iso?: string | null): string => {
   if (!iso) return "??-??";
   const d = new Date(iso);
-  const p = (n) => String(n).padStart(2, "0");
+  const p = (n: number): string => String(n).padStart(2, "0");
   return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
-const skipped = (id) => ["skip", "noise", "已看", "跳过"].includes(String((idx.get(id) || {}).verdict || "").toLowerCase());
+const skipped = (id: number): boolean =>
+  ["skip", "noise", "已看", "跳过"].includes(String((idx.get(id) || {}).verdict || "").toLowerCase());
 
 // ---- new: in a feed, never opened ----
 const fresh = [...server.entries()]
@@ -187,8 +217,20 @@ const fresh = [...server.entries()]
 // A hole memo is permanent: once we asked for the ids above a hole and got nothing, it is a deleted post.
 // A tail memo is only valid at the server height it was taken at -- otherwise a reply that landed after
 // the last ask would stay invisible forever.
+interface Change {
+  id: number;
+  title?: string;
+  localMax: number;
+  serverHighest: number | null;
+  from: number;
+  to: number;
+  kind: "补洞" | "新楼";
+  urls: string[];
+  waitingOn: string | null;
+  last?: string | null;
+}
 const IDS_CHUNK = 50;
-const changed = [];
+const changed: Change[] = [];
 for (const [id, l] of local.entries()) {
   const s = server.get(id);
   // the topic file itself remembers the highest post number at fetch time, so an unfinished topic
@@ -197,7 +239,7 @@ for (const [id, l] of local.entries()) {
   const have = new Set(l.nums);
   const serverAhead = high > l.max;
 
-  const holes = [];
+  const holes: [number, number][] = [];
   for (let n = 1; n <= l.max; n++) {
     if (have.has(n)) continue;
     const last = holes[holes.length - 1];
@@ -209,12 +251,12 @@ for (const [id, l] of local.entries()) {
 
   const pick = openHoles.length
     ? { anchor: openHoles[0][0] - 1, range: openHoles[0], tail: false }
-    : { anchor: l.max, range: [l.max + 1, high], tail: true };
+    : { anchor: l.max, range: [l.max + 1, high] as [number, number], tail: true };
 
-  const urls = [];
-  let waitingOn = null;
+  const urls: string[] = [];
+  let waitingOn: string | null = null;
   const idsPath = path.join(RAW, "ids", `${id}-at-${pick.anchor}.json`);
-  const idsDoc = readJson(idsPath);
+  const idsDoc = readJson<IdsDoc>(idsPath);
   const tailIsFresh = !pick.tail || asked.get(`${id}:${pick.anchor}`) === high;
 
   if (!idsDoc || !tailIsFresh) {
@@ -228,9 +270,7 @@ for (const [id, l] of local.entries()) {
     waitingOn = "楼号表";
     if (pick.tail) noteRows.push({ t: "asked", id, anchor: pick.anchor, high });
   } else {
-    const miss = (idsDoc.post_ids || [])
-      .map(String)
-      .filter((x) => !knownIds.has(`${id}:${x}`) && !missing.has(`${id}:${x}`));
+    const miss = (idsDoc.post_ids || []).map(String).filter((x) => !knownIds.has(`${id}:${x}`) && !missing.has(`${id}:${x}`));
     for (let i = 0; i < miss.length; i += IDS_CHUNK) {
       const chunk = miss.slice(i, i + IDS_CHUNK);
       urls.push(`/t/${id}/posts.json?` + chunk.map((x) => `post_ids[]=${x}`).join("&"));
@@ -254,7 +294,10 @@ for (const [id, l] of local.entries()) {
 changed.sort((a, b) => String(b.last).localeCompare(String(a.last)));
 
 // ---- output ----
-const allUrls = [...changed.flatMap((c) => c.urls), ...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : [])];
+const allUrls = [
+  ...changed.flatMap((c) => c.urls),
+  ...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : []),
+];
 if (urlsOnly) {
   if (allUrls.length) console.log(allUrls.join("\n"));
   if (noteRows.length) fs.appendFileSync(NOTES, noteRows.map((r) => JSON.stringify(r)).join("\n") + "\n");
@@ -264,7 +307,7 @@ if (urlsOnly) {
 console.log(`本地 ${local.size} 个主题 · 服务器视图 ${server.size} 个 · 新帖 ${fresh.length} · 有更新 ${changed.length}`);
 if (!feeds.length) {
   console.log("\n还没有任何搜索或列表数据。先拉一次：");
-  console.log('  node fetch.js "/search.json?q=招聘"');
+  console.log('  node dist/fetch.js "/search.json?q=招聘"');
   if (!changed.length) process.exit(0);
   console.log("（下面的更新是从帖子文件自己记住的最高楼号看出来的）");
 }
@@ -292,8 +335,8 @@ const unknown = [...local.keys()].filter((id) => !server.has(id)).length;
 if (unknown) console.log(`\n(${unknown} 个本地主题不在任何已拉取的列表里，无法判断有没有新回复)`);
 
 if (allUrls.length) {
-  console.log(`\n拉这些：\n  node fetch.js ${allUrls.map((u) => `"${u}"`).join(" ")}`);
-  console.log(`或：node pending.js --urls > urls.txt && node fetch.js --file urls.txt`);
+  console.log(`\n拉这些：\n  node dist/fetch.js ${allUrls.map((u) => `"${u}"`).join(" ")}`);
+  console.log(`或：node dist/pending.js --urls > urls.txt && node dist/fetch.js --file urls.txt`);
 }
 if (!includeNew && fresh.length) console.log(`(没打开过的帖不在 --urls 里；想一起拉就加 --include-new)`);
 

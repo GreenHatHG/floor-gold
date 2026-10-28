@@ -1,0 +1,4 @@
+data/
+.scratch/
+.playwright-cli/
+node_modules/

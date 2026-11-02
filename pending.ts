@@ -1,52 +1,37 @@
 #!/usr/bin/env node
 // Compare data/raw/ with what the server reports, print only the gaps. Never hits the network.
-// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
-const HELP_SHORT = `pending.ts — diff data/raw/ against what the server reports, print only the gaps.
+// The contract is HELP (-h / --help), not this comment.
+const HELP = `pending.ts — diff data/raw/ against what the server reports, print only the gaps.
 
 Never talks to the network. Topic files remember their own highest post number; the search
 and list files we already fetched say what the server thinks. This prints the difference.
 
 Usage:
-  node dist/pending.js                         human summary
-  node dist/pending.js --urls                  only the URLs to fetch, one per line
-  node dist/pending.js --urls --include-new    also queue threads you never opened
-  node dist/pending.js -h                      this summary
-  node dist/pending.js --help                  files, notes.jsonl, summary marks
+  bun run pending.ts                         human summary
+  bun run pending.ts --urls                  only the URLs to fetch, one per line
+  bun run pending.ts --urls --include-new    also queue threads you never opened
 
 Options:
   --urls          print URLs only, for a file:
-                    node dist/pending.js --urls > urls.txt && node dist/fetch.js --file urls.txt
+                    bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt
   --include-new   include threads from a feed that were never opened (off by default)
   --top 25        how many never-opened threads to list (default 25)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
-Exit codes: 0 ok · 2 bad arguments, for example --top 0
-`;
-
-const HELP = HELP_SHORT + `
 Summary marks:
   [跳过] you marked it skip or noise    [已判] judged, not skipped
   新楼 new replies    补洞 a gap inside posts you already hold
   (等楼号表) the id table must come back first; those posts are fetched on the next run
 
-Reads:
-  data/raw/{topic,search,list,tag,site}/*.json
-  data/raw/ids/*.json  the post number tables that say which holes are already explained
-  data/index.jsonl    one judgement per line, the last line wins
-  data/notes.jsonl    bookkeeping rows, see Writes
+Reads data/raw/{topic,search,list,tag,site}/*.json, data/raw/ids/*.json (the post number
+tables that say which holes are already explained), data/index.jsonl (one judgement per
+line, the last line wins) and data/notes.jsonl (bookkeeping, see README).
+Writes data/notes.jsonl only, plus one delete: a stale ids table is removed so the next run
+must ask the server again. Row kinds: {t:"asked", id, anchor, high} asked for posts above
+anchor, server was at high, nothing new; {t:"missing", id, pid:[...]} these posts are gone,
+stop asking.
 
-Writes:
-  data/notes.jsonl only, plus one delete: a stale ids table (data/raw/ids/...) is removed so
-  the next run must ask the server again. Two row kinds in notes:
-    {t:"asked", id, anchor, high}   asked for posts above anchor, server was at high, nothing new
-    {t:"missing", id, pid:[...]}    the server says these posts are gone, stop asking
-
-Why it is not simpler (keep these rules):
-  - posts_count lies after a delete; highest_post_number does not.
-  - /post_ids.json?post_number=N returns posts AFTER N, never N itself.
-  - An id table only proves the moment it was fetched. So a tail is asked again whenever the
-    server's highest post number moved, or a reply landing after a delete stays invisible.
-  - A hole is asked once. If nothing comes back, it is a deleted post and is remembered.
+Exit codes: 0 ok · 2 bad arguments, for example --top 0
 `;
 
 import fs from "node:fs";
@@ -63,19 +48,16 @@ import {
   type TopicDoc,
 } from "./lib";
 
-// dist/ holds the built files; data/ stays at the repo root next to it.
-const ROOT = path.join(__dirname, "..");
+// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
+// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
+const ROOT = __dirname;
 const RAW = path.join(ROOT, "data", "raw");
 const INDEX = path.join(ROOT, "data", "index.jsonl");
 const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
 const argv = process.argv.slice(2);
-if (argv.includes("--help")) {
+if (argv.includes("--help") || argv.includes("-h")) {
   console.log(HELP);
-  process.exit(0);
-}
-if (argv.includes("-h")) {
-  console.log(HELP_SHORT);
   process.exit(0);
 }
 let opts: Opts = {};
@@ -84,7 +66,7 @@ try {
 } catch (e) {
   if (!(e instanceof UsageError)) throw e;
   console.error(e.message);
-  console.error("Full contract: node dist/pending.js -h");
+  console.error("Usage: bun run pending.ts -h");
   process.exit(2);
 }
 const opt = (n: string, dflt: string | number): string => {
@@ -133,7 +115,7 @@ function readIndex(): Map<number, IndexRow> {
 }
 const idx = readIndex();
 
-// notes.jsonl is machine bookkeeping, appended by fetch.js and by this script:
+// notes.jsonl is machine bookkeeping, appended by fetch.ts and by this script:
 //   {t:"missing", id, pid:[]}  server said these post ids do not exist -> stop asking
 //   {t:"asked",   id, anchor, high}  we already asked for ids above `anchor` while the server
 //                                   claimed `high` -> nothing new came back, do not ask again
@@ -307,7 +289,7 @@ if (urlsOnly) {
 console.log(`本地 ${local.size} 个主题 · 服务器视图 ${server.size} 个 · 新帖 ${fresh.length} · 有更新 ${changed.length}`);
 if (!feeds.length) {
   console.log("\n还没有任何搜索或列表数据。先拉一次：");
-  console.log('  node dist/fetch.js "/search.json?q=招聘"');
+  console.log('  bun run fetch.ts "/search.json?q=招聘"');
   if (!changed.length) process.exit(0);
   console.log("（下面的更新是从帖子文件自己记住的最高楼号看出来的）");
 }
@@ -335,8 +317,8 @@ const unknown = [...local.keys()].filter((id) => !server.has(id)).length;
 if (unknown) console.log(`\n(${unknown} 个本地主题不在任何已拉取的列表里，无法判断有没有新回复)`);
 
 if (allUrls.length) {
-  console.log(`\n拉这些：\n  node dist/fetch.js ${allUrls.map((u) => `"${u}"`).join(" ")}`);
-  console.log(`或：node dist/pending.js --urls > urls.txt && node dist/fetch.js --file urls.txt`);
+  console.log(`\n拉这些：\n  bun run fetch.ts ${allUrls.map((u) => `"${u}"`).join(" ")}`);
+  console.log(`或：bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt`);
 }
 if (!includeNew && fresh.length) console.log(`(没打开过的帖不在 --urls 里；想一起拉就加 --include-new)`);
 

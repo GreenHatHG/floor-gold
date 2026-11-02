@@ -1,68 +1,64 @@
 #!/usr/bin/env node
-// Work out which search windows are still missing, print one URL per line for fetch.js. Sends nothing.
-// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
-const HELP_SHORT = `search.ts — work out which search windows are missing, print one URL per line.
+// Work out which month windows are still missing, print one URL per line for fetch.ts. Sends nothing.
+// The contract is HELP (-h / --help), not this comment.
+const HELP = `search.ts — work out which month windows are missing, print one URL per line.
 
 Usage:
-  node dist/search.js 招聘 招人                     full history, week by week
-  node dist/search.js 招聘 --new                    only the last two weeks
-  node dist/search.js 招聘 --since 2025-01-01
-  node dist/search.js 招聘 > urls.txt && node dist/fetch.js --file urls.txt
-  node dist/search.js -h                            this summary
-  node dist/search.js --help                        paging rules, what it prints
+  bun run search.ts 招聘 招人                     full history 2023-01 to now, month by month
+  bun run search.ts 招聘 --since 2025-06-01
+  bun run search.ts 招聘 --since 2025-06-01 --until 2025-08-31
+  bun run search.ts 招聘 --new                    from the watermark month to now
+  bun run search.ts 招聘 > urls.txt && bun run fetch.ts --file urls.txt
 
 Arguments:
-  term...        one or more keywords, one window per week. Quote a term with a space.
-                 Weak keyword? add a category word: node dist/search.js "内推 #非我莫属"
+  term...        one or more keywords, one window per month. Quote a term with a space.
+                 Weak keyword? add a category word: bun run search.ts "内推 #非我莫属"
 
 Options:
-  --new          only the last 2 weeks, skip older history
-  --since DATE   backfill from DATE (default 2023-01-01). Windows run oldest to newest.
+  --new          from the month of the watermark in data/search-state.json
+                 (no file yet: last month) up to the current month
+  --since DATE   start month, snapped down to its 1st (default 2023-01-01)
+  --until DATE   end month, snapped up into its month (default: today)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
-Exit codes: 0 ok · 2 no keyword, or a bad date
+Windows are whole UTC months on a fixed grid anchored at 2023-01-01. The same month always
+lands in the same file name, so finished months are cached forever and --since / --until /
+--new only pick grid months, they never shift keys. A stale --new watermark costs nothing:
+months between the watermark and now are already cached. The current (unfinished) month is
+the one exception: it is re-fetched and overwritten on every run, because a live month grows.
 
-Never add order:latest: it re-ranks by recency, weak matches crowd out real ones.
-`;
+Prints: one URL per line on stdout, oldest month first. On stderr: stats, a per-term
+relevance check (帖子含词, below half means the word is weak), and with --new the one-line
+watermark update to run after fetch.ts succeeds. Sends no request.
 
-const HELP = HELP_SHORT + `
-What it prints:
-  stdout  the URLs to fetch, one per line, oldest window first
-  stderr  a stats line, plus the pipe-it-into-fetch.js hint
+Paging: page=1 is the first page, same as no page, so paging starts at 2 and nothing is
+fetched twice; a month that would need page 41 is too big for one window — the program exits 1
+and that month must be split by hand (--since/--until halves).
 
-Sends no request. A window is one keyword and one week, and it is done when its file
-already exists, so stopping and rerunning costs nothing.
-
-How paging works:
-  - page=1 is the first page, same as no page. Paging starts at 2, so nothing is fetched twice.
-  - A window that came back with 50 hits gets its next page queued, up to page 40.
-  - The order:latest warning above is measured, not a hunch: "内推" got 39 hits with the plain
-    keyword and 1 hit with order:latest.
+Exit codes: 0 ok · 1 a month needs page 41 · 2 no keyword, a bad date, or conflicting options
 `;
 
 import fs from "node:fs";
 import path from "node:path";
 import { searchFile, parseArgs, UsageError, type FeedDoc, type FeedTopic, type Opts } from "./lib";
 
-// dist/ holds the built files; data/ stays at the repo root next to it.
-const RAW = path.join(__dirname, "..", "data", "raw");
+// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
+// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
+const RAW = path.join(__dirname, "data", "raw");
+const STATE = path.join(__dirname, "data", "search-state.json");
 const argv = process.argv.slice(2);
-if (argv.includes("--help")) {
+if (argv.includes("--help") || argv.includes("-h")) {
   console.log(HELP);
-  process.exit(0);
-}
-if (argv.includes("-h")) {
-  console.log(HELP_SHORT);
   process.exit(0);
 }
 let opts: Opts = {};
 let terms: string[] = [];
 try {
-  ({ opts, args: terms } = parseArgs(argv, { new: "flag", since: "value" }));
+  ({ opts, args: terms } = parseArgs(argv, { new: "flag", since: "value", until: "value" }));
 } catch (e) {
   if (!(e instanceof UsageError)) throw e;
   console.error(e.message);
-  console.error("Full contract: node dist/search.js -h");
+  console.error("Usage: bun run search.ts -h");
   process.exit(2);
 }
 const opt = (n: string, dflt: string): string => {
@@ -71,31 +67,54 @@ const opt = (n: string, dflt: string): string => {
 };
 
 if (!terms.length) {
-  console.error(HELP_SHORT);
-  console.error("Full contract: node dist/search.js --help");
+  console.error(HELP);
+  console.error("More: bun run search.ts --help");
+  process.exit(2);
+}
+if (opts.new && (opts.since !== undefined || opts.until !== undefined)) {
+  console.error("use --new, or --since/--until, not both");
   process.exit(2);
 }
 
-const DAY = 86400000;
 const PAGE_CAP = 50;
+const PAGE_MAX = 40; // a month needing page 41 is not a month problem any more
 const ISO = (d: Date): string => d.toISOString().slice(0, 10);
-const today = new Date();
-const newest = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
-const since = (() => {
-  const raw = opt("since", "2023-01-01");
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw));
-  if (!m) {
-    console.error(`--since must look like 2025-01-01, got: ${raw}`);
-    process.exit(2);
-  }
+const dateArg = (name: string, raw: string): Date | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!m) return null;
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  if (d.toISOString().slice(0, 10) !== raw) {
-    console.error(`--since is not a real date: ${raw}`);
+  return d.toISOString().slice(0, 10) === raw ? d : null;
+};
+
+// The grid: month 0 is 2023-01, windows are [monthStart(i), monthStart(i+1)).
+const monthStart = (i: number): Date => new Date(Date.UTC(2023, i, 1));
+const monthIndexOf = (d: Date): number => (d.getUTCFullYear() - 2023) * 12 + d.getUTCMonth();
+
+const now = new Date();
+const liveIdx = monthIndexOf(now);
+
+let startIdx = 0;
+let endIdx = liveIdx;
+if (opts.since !== undefined) {
+  const d = dateArg("since", opt("since", ""));
+  if (!d) {
+    console.error(`--since must look like 2025-01-01, got: ${opt("since", "")}`);
     process.exit(2);
   }
-  return d;
-})();
-const newOnly = !!opts.new;
+  startIdx = monthIndexOf(d);
+}
+if (opts.until !== undefined) {
+  const d = dateArg("until", opt("until", ""));
+  if (!d) {
+    console.error(`--until must look like 2025-01-01, got: ${opt("until", "")}`);
+    process.exit(2);
+  }
+  endIdx = monthIndexOf(d);
+}
+if (startIdx > endIdx) {
+  console.error("--since is after --until: nothing to fetch");
+  process.exit(2);
+}
 
 const readTopics = (q: string, page: number | null): FeedTopic[] | null => {
   const f = path.join(RAW, searchFile(q, page));
@@ -108,41 +127,124 @@ const readTopics = (q: string, page: number | null): FeedTopic[] | null => {
   }
 };
 
+// --new starts at the watermark's month: overlap with already-fetched months is free, the
+// grid cache absorbs any staleness. No state file yet: fall back to last month.
+let newOnly = false;
+if (opts.new) {
+  newOnly = true;
+  let wmIdx = liveIdx - 1;
+  let wmShown: string | null = null;
+  try {
+    const s = JSON.parse(fs.readFileSync(STATE, "utf8")) as { last_new?: string };
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s.last_new ?? ""));
+    if (m) {
+      wmIdx = monthIndexOf(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])));
+      wmShown = String(s.last_new).slice(0, 10);
+    }
+  } catch {
+    // no state file: fall back to last month
+  }
+  startIdx = wmIdx;
+  if (wmShown !== null && wmIdx < liveIdx) {
+    console.error(`提醒: 水位线 ${wmShown}，今天 ${ISO(now).slice(0, 10)}，隔了整月。`);
+    console.error("      中间的月份要么已缓存要么这次补上，不会漏，但别停太久。");
+  }
+  endIdx = liveIdx;
+}
+
+// posts[].blurb is in every search response; it is the only cheap way to score a word.
+const blurbHit = (word: string, q: string): { hit: number; total: number } | null => {
+  let posts: { blurb?: string }[];
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(RAW, searchFile(q, null)), "utf8")) as FeedDoc & {
+      posts?: { blurb?: string }[];
+    };
+    if (!d || !Array.isArray(d.posts)) return null;
+    posts = d.posts;
+  } catch {
+    return null;
+  }
+  if (!word || !posts.length) return null;
+  const hit = posts.filter((p) => typeof p.blurb === "string" && p.blurb.includes(word)).length;
+  return { hit, total: posts.length };
+};
+
 const urls: string[] = [];
-const stats = { windows: 0, done: 0, capped: 0 };
+const stats = { windows: 0, cached: 0, queued: 0 };
+const relevance: Record<string, { hit: number; total: number }> = {};
+
+const tooBig = (q: string, p: number): never => {
+  console.error(`\n[停] ${q} 需要第 ${p} 页，一个月装不下了。`);
+  console.error("     按约定不处理: 用 --since/--until 把这个月拆成两半再抓。");
+  process.exit(1);
+};
 
 for (const term of terms) {
-  const start = newOnly ? new Date(newest.getTime() - 13 * DAY) : since;
-  for (let a = new Date(start); a.getTime() < newest.getTime(); a = new Date(a.getTime() + 7 * DAY)) {
-    const b = new Date(Math.min(a.getTime() + 7 * DAY, newest.getTime()));
+  const word = term.trim().split(/\s+/)[0];
+  let relHit = 0;
+  let relTotal = 0;
+  for (let mi = startIdx; mi <= endIdx; mi++) {
+    const a = monthStart(mi);
+    const b = monthStart(mi + 1);
     const q = `${term} after:${ISO(a)} before:${ISO(b)}`;
+    const url = `/search.json?q=${encodeURIComponent(q)}`;
     stats.windows++;
+    const live = mi === liveIdx;
 
-    // Discourse treats page=1 as "the first page", same as no page at all. Real paging starts at 2.
-    let page: number | null = null;
-    for (;;) {
-      const topics = readTopics(q, page);
-      if (topics === null) {
-        if (page !== null) break;
-        urls.push(`/search.json?q=${encodeURIComponent(q)}`);
+    // page 1: the unfinished month is re-fetched and overwritten every run.
+    const first = readTopics(q, null);
+    if (first === null) {
+      // Page 1 not on disk: only page 1 can be queued. Whether page 2 exists is unknown
+      // until page 1 comes back full, so guessing it here would double the backfill.
+      urls.push(url);
+      stats.queued++;
+      continue;
+    }
+    if (live) {
+      urls.push(url);
+      stats.queued++;
+    } else {
+      stats.cached++;
+    }
+    if (!relTotal) {
+      const r = blurbHit(word, q);
+      if (r) {
+        relHit = r.hit;
+        relTotal = r.total;
+      }
+    }
+    // A full page 1 may have more pages; the live month may also have grown past a full
+    // page 1 it had last time, so it is walked even when page 1 itself is queued.
+    if (first.length < PAGE_CAP && !live) continue;
+    for (let p = 2; ; p++) {
+      if (p > PAGE_MAX) tooBig(q, p);
+      const t = readTopics(q, p);
+      if (t === null) {
+        urls.push(`${url}&page=${p}`);
+        stats.queued++;
         break;
       }
-      stats.done++;
-      if (topics.length < PAGE_CAP) break;
-      stats.capped++;
-      const next: number = page === null ? 2 : page + 1;
-      if (next > 40) break; // a week needing 2000 hits is not a week problem
-      if (readTopics(q, next) === null) {
-        urls.push(`/search.json?q=${encodeURIComponent(q)}&page=${next}`);
-        break;
-      }
-      page = next;
+      stats.cached++;
+      if (t.length < PAGE_CAP) break;
     }
   }
+  relevance[term] = { hit: relHit, total: relTotal };
 }
 
 console.error(
-  `${terms.length} 个词 · ${stats.windows} 个周窗口 · 已抓 ${stats.done} 页 · 满页待翻 ${stats.capped} 次 · 待抓 ${urls.length} 个请求`
+  `${terms.length} 个词 · ${stats.windows} 个月窗口 · 缓存命中 ${stats.cached} 页 · 待抓 ${stats.queued} 个请求`
 );
-console.error(`写入: node dist/search.js ... > urls.txt && node dist/fetch.js --file urls.txt`);
+for (const term of terms) {
+  const r = relevance[term];
+  if (!r.total) continue;
+  const pct = Math.round((r.hit / r.total) * 100);
+  console.error(
+    `词频 ${term}: ${r.hit}/${r.total} 帖子含词 (${pct}%)${pct < 50 ? " — 低于一半，考虑换词或加 #非我莫属" : ""}`
+  );
+}
+if (newOnly) {
+  console.error("fetch 成功后更新水位线（复制运行即可）:");
+  console.error(`  echo '{"last_new":"${ISO(now).slice(0, 10)}"}' > data/search-state.json`);
+}
+console.error(`写入: bun run search.ts ... > urls.txt && bun run fetch.ts --file urls.txt`);
 console.log(urls.join("\n"));

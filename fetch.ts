@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 // Batch-fetch linux.do JSON through the logged-in Chrome. Saves under data/raw/, judges nothing.
-// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
-const HELP_SHORT = `fetch.ts — fetch linux.do JSON through your logged-in Chrome, save under data/raw/.
+// The contract is HELP (-h / --help), not this comment.
+const HELP = `fetch.ts — fetch linux.do JSON through your logged-in Chrome, save under data/raw/.
 
 It judges nothing. Picking what to fetch is the agent's job.
 
 Usage:
-  node dist/fetch.js <url> [url...]
-  node dist/fetch.js --file urls.txt
-  node dist/fetch.js --batch 10 --rate 2/4000
-  node dist/fetch.js -h              this summary
-  node dist/fetch.js --help          where each URL lands, plus the traps
+  bun run fetch.ts <url> [url...]
+  bun run fetch.ts --file urls.txt
+  bun run fetch.ts --batch 10 --rate 2/4000
 
 Options:
   --file FILE       read one URL per line; blank lines and # comments are skipped
@@ -20,29 +18,13 @@ Options:
   --session chrome  playwright-cli session name (default chrome)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
+The same URL always lands in the same file under data/raw/ (mapping in README "Disk layout").
+Topic files are merged, never replaced, and every write is atomic; the one exception is a
+corrupt old file, which is overwritten after a warning.
+
 Exit codes: 0 all saved · 1 some failed, see data/todo.txt · 2 bad arguments
 
 429/403 is Cloudflare, not a rate limit. Wait a few minutes, rerun the same command.
-`;
-
-const HELP = HELP_SHORT + `
-Where each URL lands (the same URL always lands in the same file):
-  /t/<id>.json, /t/<id>/posts.json     data/raw/topic/<id>.json      merged by post id
-  /t/<id>/post_ids.json?post_number=N  data/raw/ids/<id>-at-<N>.json
-  /search.json?q=...&page=N            data/raw/search/<q>[-pN].json
-  /c/<id>/l/latest.json                data/raw/list/c<id>[-pN].json
-  /tag/<tag>.json                      data/raw/tag/<tag>.json
-  /latest, /top, /new, ...             data/raw/site/<name>[-<period>][-pN].json
-  anything else                        data/raw/other/<path>-<hash>.json
-  <q> and <tag> are filenames, so punctuation inside them gets a short hash suffix.
-  An existing topic file is merged, never replaced, and every write is atomic. The one
-  exception: a corrupt old file is overwritten, after a warning.
-
-Two traps behind the 429 rule above, for whoever edits this script:
-  - Chrome slows timers in background tabs, so the limiter takes a slot and sleeps exactly.
-    It never polls on a short interval, or 20 requests take 157 seconds.
-  - A 200 is not proof a post exists. A shape check guards data/notes.jsonl, so an error
-    body cannot be remembered as "post deleted".
 `;
 
 import fs from "node:fs";
@@ -61,18 +43,15 @@ import {
   type TopicPost,
 } from "./lib";
 
-// dist/ holds the built files; data/ stays at the repo root next to it.
-const ROOT = path.join(__dirname, "..");
+// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
+// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
+const ROOT = __dirname;
 const RAW = path.join(ROOT, "data", "raw");
 const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
 const rawArgs = process.argv.slice(2);
-if (rawArgs.includes("--help")) {
+if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
   console.log(HELP);
-  process.exit(0);
-}
-if (rawArgs.includes("-h")) {
-  console.log(HELP_SHORT);
   process.exit(0);
 }
 let opts: Opts = {};
@@ -88,7 +67,7 @@ try {
 } catch (e) {
   if (!(e instanceof UsageError)) throw e;
   console.error(e.message);
-  console.error("Full contract: node dist/fetch.js -h");
+  console.error("Usage: bun run fetch.ts -h");
   process.exit(2);
 }
 const opt = (name: string, dflt: string): string => {
@@ -135,8 +114,8 @@ const normalize = (u: string): string => u.replace(/^https?:\/\/linux\.do/, "") 
 
 urls = [...new Set(urls.map(normalize))];
 if (!urls.length) {
-  console.error(HELP_SHORT);
-  console.error("Full contract: node dist/fetch.js --help");
+  console.error(HELP);
+  console.error("More: bun run fetch.ts --help");
   process.exit(2);
 }
 
@@ -438,6 +417,6 @@ if (notDone.length) {
   const out = path.join(ROOT, "data", "todo.txt");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, [...new Set(notDone)].join("\n") + "\n");
-  console.log(`${notDone.length} 个没抓到，已写进 data/todo.txt（下次：node dist/fetch.js --file data/todo.txt）`);
+  console.log(`${notDone.length} 个没抓到，已写进 data/todo.txt（下次：bun run fetch.ts --file data/todo.txt）`);
 }
 if (badCount) process.exit(1);

@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 // Turn one raw topic file into a short readable digest. Never fetches.
-// The contract is HELP_SHORT (-h) and HELP (--help), not this comment.
-const HELP_SHORT = `digest.ts — turn one local topic file into a short text digest. Never fetches.
+// The contract is HELP (-h / --help), not this comment.
+const HELP = `digest.ts — turn one local topic file into a short text digest. Never fetches.
 
 One topic file is 50 to 200 KB of JSON. This prints a few hundred chars per post instead, so
 the chat never has to swallow the whole thing.
 
 Usage:
-  node dist/digest.js <topic_id|path.json>
-  node dist/digest.js 2881282 --new
-  node dist/digest.js 2881282 --from 40 --chars 600
-  node dist/digest.js -h              this summary
-  node dist/digest.js --help          the other examples, and the header
+  bun run digest.ts <topic_id|path.json>
+  bun run digest.ts 2881282 --new
+  bun run digest.ts 2881282 --from 40 --chars 600
+  bun run digest.ts 2881282 --full 43    the full text of post 43 only
 
 Options:
   --new        only posts after your read_upto cursor in data/index.jsonl
@@ -20,38 +19,29 @@ Options:
   --full N     print the whole text of post N and stop
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
-Output: one line per post, #number user date text
+Output: one line per post, #number user date text. The header shows title, post count, the
+highest post number when it differs from the count (a delete makes them differ), missing
+post numbers, last reply date, how far you already read, and your last verdict from
+data/index.jsonl.
+
+No local copy means fetch first: bun run fetch.ts "/t/<id>.json"
 
 Exit codes: 0 ok · 1 no local copy or no such post · 2 bad arguments
-`;
-
-const HELP = HELP_SHORT + `
-More examples:
-  node dist/digest.js 2881282 --full 43    the full text of post 43 only
-
-The header shows title, post count, the highest post number when it differs from the count
-(a delete makes them differ), missing post numbers, last reply date, how far you already
-read, and your last verdict from data/index.jsonl.
-
-No local copy means fetch first: node dist/fetch.js "/t/<id>.json"
 `;
 
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, UsageError, type IndexRow, type Opts, type TopicDoc, type TopicPost } from "./lib";
 
-// dist/ holds the built files; data/ stays at the repo root next to it.
-const ROOT = path.join(__dirname, "..");
+// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
+// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
+const ROOT = __dirname;
 const RAW = path.join(ROOT, "data", "raw");
 const INDEX = path.join(ROOT, "data", "index.jsonl");
 
 const argv = process.argv.slice(2);
-if (argv.includes("--help")) {
+if (argv.includes("--help") || argv.includes("-h")) {
   console.log(HELP);
-  process.exit(0);
-}
-if (argv.includes("-h")) {
-  console.log(HELP_SHORT);
   process.exit(0);
 }
 let opts: Opts = {};
@@ -66,7 +56,7 @@ try {
 } catch (e) {
   if (!(e instanceof UsageError)) throw e;
   console.error(e.message);
-  console.error("Full contract: node dist/digest.js -h");
+  console.error("Usage: bun run digest.ts -h");
   process.exit(2);
 }
 const opt = (n: string, dflt?: string): string | undefined => {
@@ -86,14 +76,14 @@ const flag = (n: string): boolean => !!opts[n];
 
 const target = rest[0];
 if (!target) {
-  console.error(HELP_SHORT);
-  console.error("Full contract: node dist/digest.js --help");
+  console.error(HELP);
+  console.error("More: bun run digest.ts --help");
   process.exit(2);
 }
 
 const file = target.endsWith(".json") ? target : path.join(RAW, "topic", `${target.replace(/\D/g, "")}.json`);
 if (!fs.existsSync(file)) {
-  console.error(`no local copy of that topic. fetch it first:\n  node dist/fetch.js "/t/${target.replace(/\D/g, "")}.json"`);
+  console.error(`no local copy of that topic. fetch it first:\n  bun run fetch.ts "/t/${target.replace(/\D/g, "")}.json"`);
   process.exit(1);
 }
 const topic = JSON.parse(fs.readFileSync(file, "utf8")) as TopicDoc;

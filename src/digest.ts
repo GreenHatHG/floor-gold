@@ -31,52 +31,19 @@ Exit codes: 0 ok · 1 no local copy or no such post · 2 bad arguments
 
 import fs from "node:fs";
 import path from "node:path";
-import type { Opts } from "./lib/args";
-import { parseArgs, UsageError } from "./lib/args";
-import { INDEX, RAW } from "./lib/paths";
-import type { IndexRow, TopicDoc, TopicPost } from "./lib/types";
+import { htmlToText, md, oneLine } from "./cli/digest-text";
+import { readIndex } from "./cli/index-store";
+import { flagOf, numOf, optOf, parseOrExit, showHelp, showUsage } from "./lib/cli";
+import { RAW } from "./lib/paths";
+import type { TopicDoc } from "./lib/types";
 
 const argv = process.argv.slice(2);
-if (argv.includes("--help") || argv.includes("-h")) {
-	console.log(HELP);
-	process.exit(0);
-}
-let opts: Opts = {};
-let rest: string[] = [];
-try {
-	({ opts, args: rest } = parseArgs(argv, {
-		new: "flag",
-		from: "value",
-		chars: "value",
-		full: "value",
-	}));
-} catch (e) {
-	if (!(e instanceof UsageError)) throw e;
-	console.error(e.message);
-	console.error("Usage: bun run src/digest.ts -h");
-	process.exit(2);
-}
-const opt = (n: string, dflt?: string): string | undefined => {
-	const v = opts[n];
-	return typeof v === "string" ? v : dflt;
-};
-const num = (n: string, dflt: number, min: number): number => {
-	const raw = opt(n, String(dflt));
-	const v = Number(raw);
-	if (!Number.isFinite(v) || v < min) {
-		console.error(`--${n} must be a number >= ${min}, got: ${raw}`);
-		process.exit(2);
-	}
-	return v;
-};
-const flag = (n: string): boolean => !!opts[n];
+if (argv.includes("--help") || argv.includes("-h")) showHelp(HELP);
+const { opts, args } = parseOrExit(argv, { new: "flag", from: "value", chars: "value", full: "value" }, "digest.ts");
 
-const target = rest[0];
-if (!target) {
-	console.error(HELP);
-	console.error("More: bun run src/digest.ts --help");
-	process.exit(2);
-}
+// ---- main ----
+const target = args[0];
+if (!target) showUsage(HELP, "digest.ts");
 
 const file = target.endsWith(".json") ? target : path.join(RAW, "topic", `${target.replace(/\D/g, "")}.json`);
 if (!fs.existsSync(file)) {
@@ -92,48 +59,8 @@ if (!posts.length) {
 	process.exit(1);
 }
 
-// Last line wins. Agent appends updates with plain shell, never rewrites the file.
-function readIndex(): Map<number, IndexRow> {
-	const out = new Map<number, IndexRow>();
-	if (!fs.existsSync(INDEX)) return out;
-	for (const line of fs.readFileSync(INDEX, "utf8").split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const row = JSON.parse(line) as IndexRow;
-			if (row && row.id != null) out.set(Number(row.id), Object.assign(out.get(Number(row.id)) || {}, row));
-		} catch {}
-	}
-	return out;
-}
-
-function htmlToText(html: unknown): string {
-	return String(html || "")
-		.replace(/<img[^>]*alt="([^"]*)"[^>]*>/gi, " $1 ")
-		.replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, "\n")
-		.replace(/<[^>]+>/g, "")
-		.replace(/&nbsp;/g, " ")
-		.replace(/</g, "<")
-		.replace(/>/g, ">")
-		.replace(/"/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&/g, "&")
-		.replace(/[ \t\u00a0]+/g, " ")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
-}
-
-const md = (iso?: string | null): string => {
-	if (!iso) return "??-??";
-	const d = new Date(iso);
-	const p = (n: number): string => String(n).padStart(2, "0");
-	return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-};
-const oneLine = (s: string): string => s.replace(/\s*\n+\s*/g, " ⏎ ").trim();
-
-// ---- full text of a single post ----
-const fullN = opt("full");
+// full text of a single post
+const fullN = optOf(opts, "full");
 if (fullN) {
 	const p = posts.find((x) => x.post_number === Number(fullN));
 	if (!p) {
@@ -146,11 +73,11 @@ if (fullN) {
 	process.exit(0);
 }
 
-// ---- header ----
+// header
 const idx = readIndex();
-const rec: IndexRow = idx.get(Number(topic.id)) || {};
+const rec = idx.get(Number(topic.id)) || {};
 const readUpto = Number(rec.read_upto || 0);
-const chars = num("chars", 200, 20);
+const chars = numOf(opts, "chars", 200, 20);
 
 const highest = topic.highest_post_number || posts[posts.length - 1].post_number;
 const haveNums = posts.map((p) => p.post_number);
@@ -178,13 +105,13 @@ console.log(
 if (rec.verdict || rec.note) console.log(`last verdict: ${rec.verdict || "-"} ${rec.note || ""}`.trim());
 console.log("-".repeat(60));
 
-// ---- posts ----
-const fromN = num("from", 0, 0);
+// posts
+const fromN = numOf(opts, "from", 0, 0);
 const shown = posts
-	.filter((p: TopicPost) => (flag("new") ? p.post_number > readUpto : true))
-	.filter((p: TopicPost) => p.post_number >= fromN);
+	.filter((p) => (flagOf(opts, "new") ? p.post_number > readUpto : true))
+	.filter((p) => p.post_number >= fromN);
 if (!shown.length) {
-	console.log(flag("new") ? "(no new posts)" : "(no posts match)");
+	console.log(flagOf(opts, "new") ? "(no new posts)" : "(no posts match)");
 	process.exit(0);
 }
 for (const p of shown) {

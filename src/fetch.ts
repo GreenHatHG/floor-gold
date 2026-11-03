@@ -30,47 +30,20 @@ Exit codes: 0 all saved · 1 some failed, see data/todo.txt · 2 bad arguments
 
 import fs from "node:fs";
 import { fetchAll } from "./core/fetch-core";
-import type { Opts } from "./lib/args";
-import { parseArgs, UsageError } from "./lib/args";
+import { numOf, optOf, parseOrExit, showHelp, showUsage } from "./lib/cli";
 import { FatalError } from "./lib/fatal";
 
 const rawArgs = process.argv.slice(2);
-if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
-	console.log(HELP);
-	process.exit(0);
-}
-let opts: Opts = {};
-let args: string[] = [];
-try {
-	({ opts, args } = parseArgs(rawArgs, {
-		file: "value",
-		batch: "value",
-		conc: "value",
-		rate: "value",
-		session: "value",
-	}));
-} catch (e) {
-	if (!(e instanceof UsageError)) throw e;
-	console.error(e.message);
-	console.error("Usage: bun run src/fetch.ts -h");
-	process.exit(2);
-}
-const opt = (name: string, dflt: string): string => {
-	const v = opts[name];
-	return typeof v === "string" ? v : dflt;
-};
-const num = (name: string, dflt: number, min: number): number => {
-	const raw = opt(name, String(dflt));
-	const n = Number(raw);
-	if (!Number.isFinite(n) || n < min) {
-		console.error(`--${name} must be a number >= ${min}, got: ${raw}`);
-		process.exit(2);
-	}
-	return n;
-};
+if (rawArgs.includes("--help") || rawArgs.includes("-h")) showHelp(HELP);
+const { opts, args } = parseOrExit(
+	rawArgs,
+	{ file: "value", batch: "value", conc: "value", rate: "value", session: "value" },
+	"fetch.ts",
+);
 
+// ---- main: collect urls from args and --file, then fetch ----
 let urls: string[] = args.slice();
-const fileArg = opt("file", "");
+const fileArg = optOf(opts, "file", "");
 if (fileArg) {
 	if (!fs.existsSync(fileArg)) {
 		console.error(`--file ${fileArg}: no such file`);
@@ -84,25 +57,21 @@ if (fileArg) {
 			.filter((s) => s && !s.startsWith("#")),
 	);
 }
-if (!urls.length) {
-	console.error(HELP);
-	console.error("More: bun run src/fetch.ts --help");
-	process.exit(2);
-}
+if (!urls.length) showUsage(HELP, "fetch.ts");
 
-const rate = String(opt("rate", "2/3000")).split("/");
+const rate = String(optOf(opts, "rate", "2/3000")).split("/");
 const rateN = Number(rate[0]); // 2  → how many requests
 const rateWindow = Number(rate[1]); // 3000 → per how many ms
 if (!Number.isFinite(rateN) || rateN < 1 || !Number.isFinite(rateWindow) || rateWindow < 1) {
-	console.error(`--rate must look like 2/3000, got: ${opt("rate", "")}`);
+	console.error(`--rate must look like 2/3000, got: ${optOf(opts, "rate", "")}`);
 	process.exit(2);
 }
 
 try {
 	const report = await fetchAll(urls, {
-		session: opt("session", "chrome"),
-		batch: num("batch", 20, 1),
-		conc: num("conc", 2, 1),
+		session: optOf(opts, "session", "chrome"),
+		batch: numOf(opts, "batch", 20, 1),
+		conc: numOf(opts, "conc", 2, 1),
 		rateN,
 		rateWindow,
 	});

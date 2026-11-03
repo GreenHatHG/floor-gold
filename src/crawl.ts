@@ -24,30 +24,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { fetchAll } from "./core/fetch-core";
 import { readTerms, search } from "./core/search-core";
-import { parseArgs, UsageError } from "./lib/args";
+import { parseOrExit, showHelp } from "./lib/cli";
 import { FatalError } from "./lib/fatal";
 import { STATE, TERMS, URLS_FILE } from "./lib/paths";
 
 const argv = process.argv.slice(2);
-if (argv.includes("-h") || argv.includes("--help")) {
-	console.log(HELP);
-	process.exit(0);
-}
+if (argv.includes("-h") || argv.includes("--help")) showHelp(HELP);
 let cmd = "";
-try {
-	const { opts, args } = parseArgs(argv, {});
+{
+	const { opts, args } = parseOrExit(argv, {}, "crawl.ts");
 	if (opts.new || opts.since !== undefined || opts.until !== undefined || opts.file) {
-		throw new UsageError("crawl.ts takes no options. Terms live in data/terms.txt.");
+		console.error("crawl.ts takes no options. Terms live in data/terms.txt.");
+		process.exit(2);
 	}
-	if (args.length !== 1 || !["bootstrap", "daily"].includes(args[0])) {
-		throw new UsageError("usage: bun run src/crawl.ts bootstrap | daily");
+	if (args.length !== 1 || !"bootstrap daily".split(" ").includes(args[0])) {
+		console.error("usage: bun run src/crawl.ts bootstrap | daily");
+		process.exit(2);
 	}
 	cmd = args[0];
-} catch (e) {
-	if (!(e instanceof UsageError)) throw e;
-	console.error(e.message);
-	console.error("More: bun run src/crawl.ts -h");
-	process.exit(2);
 }
 
 if (!fs.existsSync(TERMS)) {

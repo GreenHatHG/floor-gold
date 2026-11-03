@@ -34,137 +34,29 @@ stop asking.
 Exit codes: 0 ok · 2 bad arguments, for example --top 0
 `;
 
-import fs from "node:fs";
-import path from "node:path";
-import type { Opts } from "./lib/args";
-import { parseArgs, UsageError } from "./lib/args";
-import { INDEX, NOTES, RAW } from "./lib/paths";
-import type { FeedDoc, FeedTopic, IdsDoc, IndexRow, NoteRow, TopicDoc } from "./lib/types";
+import { appendNoteRows, readIndex, readNotes } from "./cli/index-store";
+import { findChanges, scanLocal, scanServer } from "./cli/topic-state";
+import { flagOf, numOf, parseOrExit, showHelp } from "./lib/cli";
 
 const argv = process.argv.slice(2);
-if (argv.includes("--help") || argv.includes("-h")) {
-	console.log(HELP);
-	process.exit(0);
-}
-let opts: Opts = {};
-try {
-	({ opts } = parseArgs(argv, { urls: "flag", "include-new": "flag", top: "value" }));
-} catch (e) {
-	if (!(e instanceof UsageError)) throw e;
-	console.error(e.message);
-	console.error("Usage: bun run src/pending.ts -h");
-	process.exit(2);
-}
-const opt = (n: string, dflt: string | number): string => {
-	const v = opts[n];
-	return typeof v === "string" ? v : String(dflt);
-};
-const urlsOnly = !!opts.urls;
-const includeNew = !!opts["include-new"];
-const TOP = (() => {
-	const raw = opt("top", 25);
-	const v = Number(raw);
-	if (!Number.isFinite(v) || v < 1) {
-		console.error(`--top must be a number >= 1, got: ${raw}`);
-		process.exit(2);
-	}
-	return v;
-})();
+if (argv.includes("--help") || argv.includes("-h")) showHelp(HELP);
+const { opts } = parseOrExit(argv, { urls: "flag", "include-new": "flag", top: "value" }, "pending.ts");
 
-const ls = (d: string): string[] => {
-	const p = path.join(RAW, d);
-	if (!fs.existsSync(p)) return [];
-	return fs
-		.readdirSync(p)
-		.filter((f) => f.endsWith(".json"))
-		.map((f) => path.join(p, f));
-};
-const readJson = <T>(f: string): T | null => {
-	try {
-		return JSON.parse(fs.readFileSync(f, "utf8")) as T;
-	} catch {
-		return null;
-	}
-};
+// ---- main: scan, diff, print ----
+const urlsOnly = flagOf(opts, "urls");
+const includeNew = flagOf(opts, "include-new");
+const TOP = numOf(opts, "top", 25, 1);
 
-function readIndex(): Map<number, IndexRow> {
-	const out = new Map<number, IndexRow>();
-	if (!fs.existsSync(INDEX)) return out;
-	for (const line of fs.readFileSync(INDEX, "utf8").split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const row = JSON.parse(line) as IndexRow;
-			if (row && row.id != null) out.set(Number(row.id), Object.assign(out.get(Number(row.id)) || {}, row));
-		} catch {}
-	}
-	return out;
-}
 const idx = readIndex();
-
-// notes.jsonl is machine bookkeeping, appended by fetch.ts and by this script:
-//   {t:"missing", id, pid:[]}  server said these post ids do not exist -> stop asking
-//   {t:"asked",   id, anchor, high}  we already asked for ids above `anchor` while the server
-//                                   claimed `high` -> nothing new came back, do not ask again
-const asked = new Map<string, number>();
-const missing = new Set<string>();
-if (fs.existsSync(NOTES)) {
-	for (const line of fs.readFileSync(NOTES, "utf8").split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const row = JSON.parse(line) as NoteRow;
-			if (row.t === "missing" && row.id != null) for (const p of row.pid || []) missing.add(`${row.id}:${p}`);
-			if (row.t === "asked" && row.id != null) asked.set(`${row.id}:${row.anchor}`, Number(row.high));
-		} catch {}
-	}
-}
-const noteRows: NoteRow[] = [];
-
-// ---- what we have locally ----
-interface LocalTopic {
-	title?: string;
-	nums: number[];
-	max: number;
-	highest: number;
-}
-const local = new Map<number, LocalTopic>();
-const knownIds = new Set<string>();
-for (const f of ls("topic")) {
-	const t = readJson<TopicDoc>(f);
-	if (!t || t.id == null) continue;
-	const posts = t.post_stream?.posts || [];
-	const nums = posts.map((p) => p.post_number).sort((a, b) => a - b);
-	for (const p of posts) knownIds.add(`${t.id}:${p.id}`);
-	local.set(Number(t.id), {
-		title: t.title,
-		nums,
-		max: nums.length ? nums[nums.length - 1] : 0,
-		highest: t.highest_post_number || 0,
-	});
-}
-
-// ---- what the server said, from any list or search we already fetched ----
-interface ServerTopic {
-	title?: string;
-	highest: number;
-	last: string | null;
-	category_id?: number;
-}
-const server = new Map<number, ServerTopic>();
-const feeds = [...ls("search"), ...ls("list"), ...ls("tag"), ...ls("site")];
-for (const f of feeds) {
-	const doc = readJson<FeedDoc>(f);
-	const topics: FeedTopic[] = doc?.topics || doc?.topic_list?.topics || [];
-	for (const t of topics) {
-		if (!t || t.id == null) continue;
-		const prev = server.get(Number(t.id)) || { highest: 0, last: null };
-		server.set(Number(t.id), {
-			title: t.title || prev.title,
-			highest: Math.max(prev.highest || 0, t.highest_post_number || t.posts_count || 0),
-			last: [prev.last, t.last_posted_at].filter(Boolean).sort().pop() || null,
-			category_id: t.category_id != null ? t.category_id : prev.category_id,
-		});
-	}
-}
+const notes = readNotes();
+const noteRows: Parameters<typeof appendNoteRows>[0] = [];
+const { local, knownIds } = scanLocal();
+const { server, feeds } = scanServer();
+const fresh = [...server.entries()]
+	.filter(([id]) => !local.has(id))
+	.map(([id, s]) => Object.assign({ id }, s))
+	.sort((a, b) => String(b.last).localeCompare(String(a.last)));
+const changed = findChanges(local, server, knownIds, notes, noteRows);
 
 const md = (iso?: string | null): string => {
 	if (!iso) return "??-??";
@@ -175,102 +67,13 @@ const md = (iso?: string | null): string => {
 const skipped = (id: number): boolean =>
 	["skip", "noise", "seen", "已看", "跳过"].includes(String(idx.get(id)?.verdict || "").toLowerCase());
 
-// ---- new: in a feed, never opened ----
-const fresh = [...server.entries()]
-	.filter(([id]) => !local.has(id))
-	.map(([id, s]) => Object.assign({ id }, s))
-	.sort((a, b) => String(b.last).localeCompare(String(a.last)));
-
-// ---- changed: opened before, and the server says something moved (or we know we have a hole) ----
-// A hole memo is permanent: once we asked for the ids above a hole and got nothing, it is a deleted post.
-// A tail memo is only valid at the server height it was taken at -- otherwise a reply that landed after
-// the last ask would stay invisible forever.
-interface Change {
-	id: number;
-	title?: string;
-	localMax: number;
-	serverHighest: number | null;
-	from: number;
-	to: number;
-	kind: "gap-fill" | "new";
-	urls: string[];
-	waitingOn: string | null;
-	last?: string | null;
-}
-const IDS_CHUNK = 50;
-const changed: Change[] = [];
-for (const [id, l] of local.entries()) {
-	const s = server.get(id);
-	// the topic file itself remembers the highest post number at fetch time, so an unfinished topic
-	// is spotted even when no feed we fetched happens to mention it
-	const high = Math.max(s?.highest || 0, l.highest || 0);
-	const have = new Set(l.nums);
-	const serverAhead = high > l.max;
-
-	const holes: [number, number][] = [];
-	for (let n = 1; n <= l.max; n++) {
-		if (have.has(n)) continue;
-		const last = holes[holes.length - 1];
-		if (last && n === last[1] + 1) last[1] = n;
-		else holes.push([n, n]);
-	}
-	const openHoles = holes.filter(([a]) => a > 1 && !readJson(path.join(RAW, "ids", `${id}-at-${a - 1}.json`)));
-	if (!serverAhead && !openHoles.length) continue;
-
-	const pick = openHoles.length
-		? { anchor: openHoles[0][0] - 1, range: openHoles[0], tail: false }
-		: { anchor: l.max, range: [l.max + 1, high] as [number, number], tail: true };
-
-	const urls: string[] = [];
-	let waitingOn: string | null = null;
-	const idsPath = path.join(RAW, "ids", `${id}-at-${pick.anchor}.json`);
-	const idsDoc = readJson<IdsDoc>(idsPath);
-	const tailIsFresh = !pick.tail || asked.get(`${id}:${pick.anchor}`) === high;
-
-	if (!idsDoc || !tailIsFresh) {
-		// a stale ids table would answer the old question again; drop it so the next run must ask
-		if (pick.tail && idsDoc) {
-			try {
-				fs.unlinkSync(idsPath);
-			} catch {}
-		}
-		urls.push(`/t/${id}/post_ids.json?post_number=${pick.anchor}`);
-		waitingOn = "post id table";
-		if (pick.tail) noteRows.push({ t: "asked", id, anchor: pick.anchor, high });
-	} else {
-		const miss = (idsDoc.post_ids || [])
-			.map(String)
-			.filter((x) => !knownIds.has(`${id}:${x}`) && !missing.has(`${id}:${x}`));
-		for (let i = 0; i < miss.length; i += IDS_CHUNK) {
-			const chunk = miss.slice(i, i + IDS_CHUNK);
-			urls.push(`/t/${id}/posts.json?${chunk.map((x) => `post_ids[]=${x}`).join("&")}`);
-		}
-	}
-	if (!urls.length) continue;
-
-	changed.push({
-		id,
-		title: l.title,
-		localMax: l.max,
-		serverHighest: s ? s.highest : null,
-		from: pick.range[0],
-		to: pick.range[1],
-		kind: openHoles.length ? "gap-fill" : "new",
-		urls,
-		waitingOn,
-		last: s?.last,
-	});
-}
-changed.sort((a, b) => String(b.last).localeCompare(String(a.last)));
-
-// ---- output ----
 const allUrls = [
 	...changed.flatMap((c) => c.urls),
 	...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : []),
 ];
 if (urlsOnly) {
 	if (allUrls.length) console.log(allUrls.join("\n"));
-	if (noteRows.length) fs.appendFileSync(NOTES, `${noteRows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	appendNoteRows(noteRows);
 	process.exit(0);
 }
 
@@ -314,4 +117,4 @@ if (allUrls.length) {
 if (!includeNew && fresh.length)
 	console.log(`(never-opened topics are not in --urls; add --include-new to fetch them too)`);
 
-if (noteRows.length) fs.appendFileSync(NOTES, `${noteRows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+appendNoteRows(noteRows);

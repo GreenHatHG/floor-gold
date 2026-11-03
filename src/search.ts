@@ -39,36 +39,20 @@ Exit codes: 0 ok · 1 a month needs page 41 · 2 no keyword, a bad date, or conf
 `;
 
 import { search } from "./core/search-core";
-import type { Opts } from "./lib/args";
-import { parseArgs, UsageError } from "./lib/args";
+import { parseOrExit, showHelp, showUsage } from "./lib/cli";
 import { FatalError } from "./lib/fatal";
 
 const argv = process.argv.slice(2);
-if (argv.includes("--help") || argv.includes("-h")) {
-	console.log(HELP);
-	process.exit(0);
-}
-let opts: Opts = {};
-let terms: string[] = [];
-try {
-	({ opts, args: terms } = parseArgs(argv, { new: "flag", since: "value", until: "value" }));
-} catch (e) {
-	if (!(e instanceof UsageError)) throw e;
-	console.error(e.message);
-	console.error("Usage: bun run src/search.ts -h");
-	process.exit(2);
-}
+if (argv.includes("--help") || argv.includes("-h")) showHelp(HELP);
+const { opts, args: terms } = parseOrExit(argv, { new: "flag", since: "value", until: "value" }, "search.ts");
 
-if (!terms.length) {
-	console.error(HELP);
-	console.error("More: bun run src/search.ts --help");
-	process.exit(2);
-}
+if (!terms.length) showUsage(HELP, "search.ts");
 if (opts.new && (opts.since !== undefined || opts.until !== undefined)) {
 	console.error("use --new, or --since/--until, not both");
 	process.exit(2);
 }
 
+// ---- main ----
 try {
 	const r = search(terms, {
 		mode: opts.new ? "new" : "full",

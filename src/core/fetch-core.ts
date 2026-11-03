@@ -9,6 +9,8 @@ import { FatalError } from "../lib/fatal";
 import { safe, searchFile } from "../lib/naming";
 import { NOTES, RAW, TODO_FILE } from "../lib/paths";
 import type { NoteRow, TopicDoc, TopicPost } from "../lib/types";
+import type { PageResult } from "./page-fetch";
+import { pageFetch } from "./page-fetch";
 
 const shortHash = (s: string): string => crypto.createHash("sha1").update(s).digest("hex").slice(0, 8);
 
@@ -105,84 +107,10 @@ export interface FetchReport {
 	noteRows: NoteRow[];
 }
 
-// Page-side: rate-limited concurrent fetch, retries 429/5xx/network. Returns bodies as text.
-const pageCode = (batch: string[], o: FetchOptions): string => `async () => {
-  const URLS = ${JSON.stringify(batch)};
-  const LIMIT = ${o.rateN}, WINDOW = ${o.rateWindow}, CONC = ${o.conc};
-  let inflight = 0;
-  const starts = [];
-  const waiting = [];
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // Chrome clamps setTimeout in background tabs, so never poll on a short timer:
-  // take a slot from a queue, and sleep exactly until the window frees up.
-  const acquire = async () => {
-    if (inflight < CONC) { inflight++; return; }
-    await new Promise((r) => waiting.push(r));
-  };
-  const release = () => {
-    const next = waiting.shift();
-    if (next) next();
-    else inflight--;
-  };
-  const slot = async () => {
-    for (;;) {
-      await acquire();
-      const now = Date.now();
-      while (starts.length && now - starts[0] >= WINDOW) starts.shift();
-      if (starts.length < LIMIT) { starts.push(now); return; }
-      release();
-      await sleep(WINDOW - (Date.now() - starts[0]) + 10);
-    }
-  };
-  // A 429 here is Cloudflare's challenge page, not a polite rate limit. Retrying while it is
-  // watching makes it worse, so one 429 stops the whole batch and hands the rest back.
-  let blocked = false;
-  const grab = async (u) => {
-    const t0 = Date.now();
-    let attempts = 0;
-    for (;;) {
-      attempts++;
-      if (blocked) return { ok: false, status: 0, skipped: true, ms: Date.now() - t0 };
-      try {
-        const r = await fetch(u, { headers: { Accept: "application/json" }, credentials: "same-origin" });
-        const txt = await r.text();
-        if (r.status === 429 || r.status === 403) {
-          blocked = true;
-          return { ok: false, status: r.status, bytes: txt.length, blocked: true, attempts, ms: Date.now() - t0 };
-        }
-        if (r.status >= 500 && attempts < 2) {
-          await sleep(4000);
-          continue;
-        }
-        return { ok: r.ok, status: r.status, bytes: txt.length, body: txt, attempts, ms: Date.now() - t0 };
-      } catch (e) {
-        if (attempts >= 2) return { ok: false, status: 0, error: String(e), attempts, ms: Date.now() - t0 };
-        await sleep(2000);
-      }
-    }
-  };
-  const results = new Array(URLS.length);
-  await Promise.all(URLS.map(async (u, i) => {
-    await slot();
-    try { results[i] = Object.assign({ url: u }, await grab(u)); }
-    catch (e) { results[i] = { url: u, ok: false, status: 0, error: String(e) }; }
-    finally { release(); }
-  }));
-  return { requested: URLS.length, blocked, results };
-}`;
-
-interface PageResult {
-	url: string;
-	ok?: boolean;
-	status?: number;
-	bytes?: number;
-	body?: string;
-	attempts?: number;
-	ms?: number;
-	blocked?: boolean;
-	skipped?: boolean;
-	error?: string;
-}
+// The page script must run inside the browser page, so we serialize the real typed
+// function with .toString() and bind the batch/limits through its one PageCfg argument.
+const pageCode = (batch: string[], o: FetchOptions): string =>
+	`(${pageFetch.toString()})(${JSON.stringify({ urls: batch, conc: o.conc, rateN: o.rateN, rateWindow: o.rateWindow })})`;
 
 function runBatch(batch: string[], o: FetchOptions): { results: PageResult[]; blocked: boolean } {
 	const tmp = path.join(os.tmpdir(), `pwfetch-${process.pid}-${Date.now()}.json`);

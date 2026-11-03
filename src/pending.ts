@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Compare data/raw/ with what the server reports, print only the gaps. Never hits the network.
 // The contract is HELP (-h / --help), not this comment.
 const HELP = `pending.ts — diff data/raw/ against what the server reports, print only the gaps.
@@ -7,13 +7,13 @@ Never talks to the network. Topic files remember their own highest post number; 
 and list files we already fetched say what the server thinks. This prints the difference.
 
 Usage:
-  bun run pending.ts                         human summary
-  bun run pending.ts --urls                  only the URLs to fetch, one per line
-  bun run pending.ts --urls --include-new    also queue threads you never opened
+  bun run src/pending.ts                         human summary
+  bun run src/pending.ts --urls                  only the URLs to fetch, one per line
+  bun run src/pending.ts --urls --include-new    also queue threads you never opened
 
 Options:
   --urls          print URLs only, for a file:
-                    bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt
+                    bun run src/pending.ts --urls > urls.txt && bun run src/fetch.ts --file urls.txt
   --include-new   include threads from a feed that were never opened (off by default)
   --top 25        how many never-opened threads to list (default 25)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
@@ -36,24 +36,10 @@ Exit codes: 0 ok · 2 bad arguments, for example --top 0
 
 import fs from "node:fs";
 import path from "node:path";
-import {
-	type FeedDoc,
-	type FeedTopic,
-	type IdsDoc,
-	type IndexRow,
-	type NoteRow,
-	type Opts,
-	parseArgs,
-	type TopicDoc,
-	UsageError,
-} from "./lib";
-
-// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
-// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
-const ROOT = __dirname;
-const RAW = path.join(ROOT, "data", "raw");
-const INDEX = path.join(ROOT, "data", "index.jsonl");
-const NOTES = path.join(ROOT, "data", "notes.jsonl");
+import type { Opts } from "./lib/args";
+import { parseArgs, UsageError } from "./lib/args";
+import { INDEX, NOTES, RAW } from "./lib/paths";
+import type { FeedDoc, FeedTopic, IdsDoc, IndexRow, NoteRow, TopicDoc } from "./lib/types";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
@@ -66,7 +52,7 @@ try {
 } catch (e) {
 	if (!(e instanceof UsageError)) throw e;
 	console.error(e.message);
-	console.error("Usage: bun run pending.ts -h");
+	console.error("Usage: bun run src/pending.ts -h");
 	process.exit(2);
 }
 const opt = (n: string, dflt: string | number): string => {
@@ -293,7 +279,7 @@ console.log(
 );
 if (!feeds.length) {
 	console.log("\nNo search or list data yet. Fetch once first:");
-	console.log('  bun run fetch.ts "/search.json?q=招聘"');
+	console.log('  bun run src/fetch.ts "/search.json?q=招聘"');
 	if (!changed.length) process.exit(0);
 	console.log("(updates below are read from the highest post number remembered in the topic files themselves)");
 }
@@ -322,8 +308,8 @@ if (unknown)
 	console.log(`\n(${unknown} local topics are not in any fetched list, cannot tell if they have new replies)`);
 
 if (allUrls.length) {
-	console.log(`\nfetch these:\n  bun run fetch.ts ${allUrls.map((u) => `"${u}"`).join(" ")}`);
-	console.log(`or: bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt`);
+	console.log(`\nfetch these:\n  bun run src/fetch.ts ${allUrls.map((u) => `"${u}"`).join(" ")}`);
+	console.log(`or: bun run src/pending.ts --urls > urls.txt && bun run src/fetch.ts --file urls.txt`);
 }
 if (!includeNew && fresh.length)
 	console.log(`(never-opened topics are not in --urls; add --include-new to fetch them too)`);

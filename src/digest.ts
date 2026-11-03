@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Turn one raw topic file into a short readable digest. Never fetches.
 // The contract is HELP (-h / --help), not this comment.
 const HELP = `digest.ts — turn one local topic file into a short text digest. Never fetches.
@@ -7,10 +7,10 @@ One topic file is 50 to 200 KB of JSON. This prints a few hundred chars per post
 the chat never has to swallow the whole thing.
 
 Usage:
-  bun run digest.ts <topic_id|path.json>
-  bun run digest.ts 2881282 --new
-  bun run digest.ts 2881282 --from 40 --chars 600
-  bun run digest.ts 2881282 --full 43    the full text of post 43 only
+  bun run src/digest.ts <topic_id|path.json>
+  bun run src/digest.ts 2881282 --new
+  bun run src/digest.ts 2881282 --from 40 --chars 600
+  bun run src/digest.ts 2881282 --full 43    the full text of post 43 only
 
 Options:
   --new        only posts after your read_upto cursor in data/index.jsonl
@@ -24,20 +24,17 @@ highest post number when it differs from the count (a delete makes them differ),
 post numbers, last reply date, how far you already read, and your last verdict from
 data/index.jsonl.
 
-No local copy means fetch first: bun run fetch.ts "/t/<id>.json"
+No local copy means fetch first: bun run src/fetch.ts "/t/<id>.json"
 
 Exit codes: 0 ok · 1 no local copy or no such post · 2 bad arguments
 `;
 
 import fs from "node:fs";
 import path from "node:path";
-import { type IndexRow, type Opts, parseArgs, type TopicDoc, type TopicPost, UsageError } from "./lib";
-
-// data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
-// here points OUTSIDE the repo (found by the monthly-grid rewrite: cache never hit).
-const ROOT = __dirname;
-const RAW = path.join(ROOT, "data", "raw");
-const INDEX = path.join(ROOT, "data", "index.jsonl");
+import type { Opts } from "./lib/args";
+import { parseArgs, UsageError } from "./lib/args";
+import { INDEX, RAW } from "./lib/paths";
+import type { IndexRow, TopicDoc, TopicPost } from "./lib/types";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
@@ -56,7 +53,7 @@ try {
 } catch (e) {
 	if (!(e instanceof UsageError)) throw e;
 	console.error(e.message);
-	console.error("Usage: bun run digest.ts -h");
+	console.error("Usage: bun run src/digest.ts -h");
 	process.exit(2);
 }
 const opt = (n: string, dflt?: string): string | undefined => {
@@ -77,14 +74,14 @@ const flag = (n: string): boolean => !!opts[n];
 const target = rest[0];
 if (!target) {
 	console.error(HELP);
-	console.error("More: bun run digest.ts --help");
+	console.error("More: bun run src/digest.ts --help");
 	process.exit(2);
 }
 
 const file = target.endsWith(".json") ? target : path.join(RAW, "topic", `${target.replace(/\D/g, "")}.json`);
 if (!fs.existsSync(file)) {
 	console.error(
-		`no local copy of that topic. fetch it first:\n  bun run fetch.ts "/t/${target.replace(/\D/g, "")}.json"`,
+		`no local copy of that topic. fetch it first:\n  bun run src/fetch.ts "/t/${target.replace(/\D/g, "")}.json"`,
 	);
 	process.exit(1);
 }
@@ -117,11 +114,11 @@ function htmlToText(html: unknown): string {
 		.replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, "\n")
 		.replace(/<[^>]+>/g, "")
 		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
+		.replace(/</g, "<")
+		.replace(/>/g, ">")
+		.replace(/"/g, '"')
 		.replace(/&#39;/g, "'")
-		.replace(/&amp;/g, "&")
+		.replace(/&/g, "&")
 		.replace(/[ \t\u00a0]+/g, " ")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();

@@ -4,15 +4,31 @@ Uses `playwright-cli` to attach to the Chrome you already logged in with, and ta
 
 ## Run with Bun
 
-Sources are TypeScript (`*.ts` at the repo root), run directly with [Bun](https://bun.sh) — no build step. Nothing is compiled, so there is no `dist/` to go stale.
+Sources are TypeScript under `src/`, run directly with [Bun](https://bun.sh) — no build step. Nothing is compiled, so there is no `dist/` to go stale.
 
 ```bash
-bun run search.ts 招聘 内推码 招人 --new
+bun run src/search.ts 招聘 内推码 招人 --new
 ```
 
 `tsc` is kept for type checks only: `npm run typecheck`.
 
 `data/` stays at the repo root.
+
+## Layout
+
+```
+src/crawl.ts           AI entry point: bootstrap / daily loop
+src/search.ts          CLI: which month windows are missing (prints URLs)
+src/fetch.ts           CLI: batch-fetch URLs through logged-in Chrome
+src/pending.ts         CLI: local disk vs server gaps
+src/digest.ts          CLI: one topic file → short text digest
+src/core/search-core   importable search logic (no exit, no printing)
+src/core/fetch-core    importable fetch logic; crawl.ts calls it directly
+src/lib/               paths, arg parser, naming rule, JSON types
+```
+
+`crawl.ts` imports the cores directly — no `spawnSync` glue. The four CLIs stay runnable
+standalone, each as a thin wrapper over its core.
 
 ## The AI contract: two commands
 
@@ -20,8 +36,8 @@ The agent never picks keywords, flags, or URLs. Terms live in `data/terms.txt` (
 line, `#` comments). There are exactly two entry points:
 
 ```bash
-bun run crawl.ts bootstrap   # first ever run, or months behind: full history, loop until drained
-bun run crawl.ts daily       # every day after: watermark month to now, loop until drained
+bun run src/crawl.ts bootstrap   # first ever run, or months behind: full history, loop until drained
+bun run src/crawl.ts daily       # every day after: watermark month to now, loop until drained
 ```
 
 Both loop search→fetch internally until nothing is left to fetch, so there is no urls.txt
@@ -34,13 +50,13 @@ When a green run finishes, the AI's job begins: judge (pending / digest / index,
 
 ```bash
 # 1. fetch what is new since the watermark (this also advances the watermark on success)
-bun run crawl.ts daily
+bun run src/crawl.ts daily
 
 # 2. see what is unopened / what has new replies
-bun run pending.ts --top=20
+bun run src/pending.ts --top=20
 
 # 3. peek at a few summaries (cheap on context)
-bun run digest.ts <topic_id> --chars=200
+bun run src/digest.ts <topic_id> --chars=200
 
 # 4. write down your call (append one line, never rewrite the file)
 echo '{"at":"'"$(date -u +%FT%TZ)"'","id":123456,"read_upto":45,"verdict":"在看","note":"上海后端,远程,要简历"}' >> data/index.jsonl
@@ -49,18 +65,18 @@ echo '{"at":"'"$(date -u +%FT%TZ)"'","id":123456,"read_upto":45,"verdict":"在�
 One-off gap checks (not part of the daily loop) still pipe into the generic fetcher:
 
 ```bash
-bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt
+bun run src/pending.ts --urls > urls.txt && bun run src/fetch.ts --file urls.txt
 ```
 
 `--urls` only prints threads with updates. Add `--include-new` to also pull the ones you never opened:
 
 ```bash
-bun run pending.ts --urls --include-new > urls.txt && bun run fetch.ts --file urls.txt
+bun run src/pending.ts --urls --include-new > urls.txt && bun run src/fetch.ts --file urls.txt
 ```
 
 ## Backfilling history
 
-Don't do it by hand: `bun run crawl.ts bootstrap` covers the whole grid for every term in
+Don't do it by hand: `bun run src/crawl.ts bootstrap` covers the whole grid for every term in
 `data/terms.txt`, looping until drained. What follows is how the plumbing underneath works.
 
 Slice by month, oldest to newest. Windows are whole UTC months on a fixed grid anchored at
@@ -69,7 +85,7 @@ forever, and `--since` / `--until` / `--new` only pick grid months, they never s
 Only the current (unfinished) month is re-fetched and overwritten every run, because it grows.
 
 ```bash
-bun run search.ts 招聘 招人 求职 面经 hc > urls.txt && bun run fetch.ts --file urls.txt
+bun run src/search.ts 招聘 招人 求职 面经 hc > urls.txt && bun run src/fetch.ts --file urls.txt
 ```
 
 A window that returns a full 50 queues its next page by itself, up to page 40. A month that
@@ -84,7 +100,7 @@ warns. `crawl.ts daily` advances the watermark itself; a manual run must do it b
 (the exact line is printed on stderr):
 
 ```bash
-bun run search.ts 招聘 --new > urls.txt && bun run fetch.ts --file urls.txt
+bun run src/search.ts 招聘 --new > urls.txt && bun run src/fetch.ts --file urls.txt
 echo '{"last_new":"2026-10-29"}' > data/search-state.json
 ```
 
@@ -92,20 +108,19 @@ echo '{"last_new":"2026-10-29"}' > data/search-state.json
 
 | File | Does | Does not |
 |---|---|---|
-| `crawl.ts` | The AI entry point: terms file + bootstrap/daily, loops search→fetch, guards the watermark | Judge relevance, pick keywords at call time |
-|---|---|---|
-| `fetch.ts` | Takes a batch of URLs, writes to `data/raw/`, logs one line | Judge relevance, decide what to fetch |
-| `search.ts` | Works out which search URLs are still missing, prints one per line | Send requests, fetch post bodies |
-| `pending.ts` | Compares disk against server, lists only the gaps | Score or rank by relevance |
-| `digest.ts` | One thread → a few hundred words of summary | Write anything to disk |
+| `src/crawl.ts` | The AI entry point: terms file + bootstrap/daily, loops search→fetch, guards the watermark | Judge relevance, pick keywords at call time |
+| `src/fetch.ts` | Takes a batch of URLs, writes to `data/raw/`, logs one line | Judge relevance, decide what to fetch |
+| `src/search.ts` | Works out which search URLs are still missing, prints one per line | Send requests, fetch post bodies |
+| `src/pending.ts` | Compares disk against server, lists only the gaps | Score or rank by relevance |
+| `src/digest.ts` | One thread → a few hundred words of summary | Write anything to disk |
 
-`lib.ts` holds the naming rule shared by the scripts, the shared JSON shapes, and the one option parser they all use. If either the naming rule or the parser forks, the cache either re-downloads forever or never resumes.
+`src/lib/` holds the naming rule shared by the scripts, the shared JSON shapes, and the one option parser they all use. If either the naming rule or the parser forks, the cache either re-downloads forever or never resumes.
 
 Every script explains itself. Read the contract from the tool, not from the code. One help text, same for both flags:
 
 ```bash
-bun run fetch.ts -h        # same as --help: usage, options, disk behavior, exit codes
-bun run fetch.ts --help
+bun run src/fetch.ts -h        # same as --help: usage, options, disk behavior, exit codes
+bun run src/fetch.ts --help
 ```
 
 It is capped at ~25 lines. Editor-facing notes (the URL → disk-path mapping, the traps)
@@ -152,13 +167,13 @@ It exists for one reason: stop re-asking what was already asked and truly has no
 - **Do not add `order:latest`**. Measured: it re-sorts by recency and weak matches push out real hits — `内推` normally returns 39 hits, with `order:latest` only 1.
 - **Chinese keywords vary a lot in quality.** `招聘`: 35 of 50 results really contain the word. `内推`: 1 of 50, because the tokenizer also counts `推`. Before searching, check `帖子含词/50` in the search file name; below half, switch the word or add a `#非我莫属` category filter. `search.ts` now prints this ratio per term on stderr.
 - **Monthly grid, not weekly.** Measured 2026-10: a busy month (招人, Sep 2026) is 70 hits = 2 pages; a quiet one (Jan 2024) is 9 hits = 1 page. Weekly would have been 4–5 requests for the same span, and 8 of the first 12 weekly runs came back full-50. Search reaches back to 2023 (Jan 2023 = 1 hit, nothing pruned).
-- **`__dirname` under `bun run` is the script's own directory (the repo root), not `src/`.** A `path.join(__dirname, "..")` there points OUTSIDE the repo — all four scripts had it, found because the monthly cache never hit. `data/` paths must join from `__dirname` directly.
+- **`__dirname` under `bun run` is the script's own directory.** All data paths come from `src/lib/paths.ts`, which resolves `ROOT` two levels up from `src/lib` — never join `data/` from a script's own `__dirname`.
 - **Deleted posts leave a permanent gap.** `pending.ts` confirms once against the post number table and remembers it, so it never loops forever on a post that isn't there.
 - **The post number table is only valid at that height.** You can't trust "we asked last time" forever, or new replies arriving after the highest post was deleted would stay invisible. So the tail is re-asked every time, against the server's current highest post number.
 - **Background Chrome tabs slow timers down.** The rate limiter can't poll on a short interval; it has to take a ticket and sleep exactly, otherwise 20 requests take 157 seconds. (The limiter in `fetch.ts` already does this.)
 - **A 200 is not proof a post exists.** The shape check in `fetch.ts` guards `data/notes.jsonl`, so an error body can never be remembered as "post deleted".
 - **Real rate limit on `/search.json` is lower than you'd guess.** Measured on 85 search requests: 60 ok, 25 blocked. A block returns Cloudflare's `Just a moment...` HTML, **not** a Discourse 429, and no `retry-after`. Waiting 45 seconds brings it back. So the default is 2 per 3 seconds, 2 in parallel (`--rate=2/3000 --conc=2`), and batches are aligned the same way.
-- **Stop the whole batch on 429/403**, no retry. While Cloudflare is watching, retrying only makes it worse. URLs we didn't get are appended to `data/todo.txt`; a few minutes later `bun run fetch.ts --file data/todo.txt` picks up where it stopped.
+- **Stop the whole batch on 429/403**, no retry. While Cloudflare is watching, retrying only makes it worse. URLs we didn't get are appended to `data/todo.txt`; a few minutes later `bun run src/fetch.ts --file data/todo.txt` picks up where it stopped.
 - **Don't backfill in one run.** Stop after a dozen or so requests, come back later. `search.ts` resumes from file names, so stopping costs nothing.
 
 ## Word list

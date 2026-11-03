@@ -1,10 +1,10 @@
 ---
 created_at: 2026-10-27
-updated_at: 2026-10-28
+updated_at: 2026-11-03
 topic: script-vs-agent-boundary
 status: decision-only
 affected_modules: [fetch.js, search.js, pending.js, digest.js, lib.js]
-tags: [architecture, llm-agent, tooling, caching, token-budget, filename-collision, cli-help]
+tags: [architecture, llm-agent, tooling, caching, token-budget, filename-collision, cli-help, orchestration]
 ---
 
 # Where to Cut Between Script and LLM Agent
@@ -38,12 +38,27 @@ So the real question is not "script or agent" — it is "which parts are mechani
 - **Attempt**: Let each script parse its own options.
   - **Failure Reason**: The parsers drifted. Three of four accepted only `--opt=value`, so `--from 3` was silently ignored and `--since 2026-10-21` searched for the literal word `2026-10-21`. Silent wrong answers, and junk cache files. Fix: one `parseArgs` in `lib.js` used by all four.
 
+- **Attempt**: Manual two-step loop: `search.ts ... > urls.txt && fetch.ts --file urls.txt`, repeated until `待抓 0`, then a hand-copied `echo` to advance the watermark. The agent had to invent flags (`--since`? which terms? quoted?) every run and remember the loop + watermark ritual.
+  - **Failure Reason**: Too much freedom for an LLM caller: every invocation was a fresh generalization exercise, a forgotten round silently under-fetched months (only page 1 of a 6-page month), and a mangled watermark echo silently skipped months later.
+- **Attempt**: Have `crawl.ts` loop until `search.ts` queues 0 URLs (stdout empty = drained).
+  - **Failure Reason**: Never terminates. `search.ts` always re-queues the live (unfinished) month's page 1 on stdout even when fully cached, so the queue never reads as 0 — the loop spun 60 rounds against a fake fetcher before hitting the safety cap. Found by adversarial verification with a fake-bun harness.
+
 ## 3. Decision & Verified Solution
 
 - **Chosen Approach**: Scripts do only **dumb, stable** work. The agent does all **judgment** each run. Nothing in code scores relevance, classifies a post, or decides what to open.
   - Scripts (4): `fetch.js` (batch fetch → disk → manifest), `search.js` (which search URLs are still missing), `pending.js` (which topics changed), `digest.js` (compress one topic to a few hundred chars). Plus `lib.js` for the shared filename rule and the shared option parser.
   - Agent (each run): pick terms and operators, read the digest, judge real-post / stale / noise, extract company, role, city, remote, salary, contact, and record a one-line verdict.
   - Trivially simple steps stay as commands, not scripts: attach check, `tab-list`, fetching a single page, looking at one post.
+- **Paradigm frozen into `crawl.ts` (2026-11-03)**: the agent-facing contract is now two subcommands with zero call-time decisions. Terms live in `data/terms.txt` (one per line, `#` comments); `bootstrap` = full 2023-01 grid, `daily` = watermark month to now. crawl.ts loops search→fetch internally and detects drain by **steady state** (same stdout URL set as previous round), not by an empty queue — this absorbs the live-month re-fetch quirk. `daily` advances `data/search-state.json` itself (tmp+rename, atomic) but ONLY after a round with 0 failed fetch URLs; any failure exits 1 with "rerun the same command". Cap of 60 rounds guards against non-convergence. Judging (pending/digest/index.jsonl) stays with the agent. README gained an "The AI contract: two commands" section; scripts table is now five scripts.
+- **Minimal Code / Command Reference** (drain detection in `crawl.ts`):
+  ```ts
+  const same = r.urls.length > 0 && r.urls.join("\n") === prev;
+  prev = r.urls.join("\n");
+  if (r.empty || same) break;          // live-month page-1 re-fetch makes r.empty unreachable
+  // ... after a green daily run, only then:
+  fs.writeFileSync(`${STATE}.tmp`, JSON.stringify({ last_new: today }));
+  fs.renameSync(`${STATE}.tmp`, STATE);
+  ```
 - **Key Changes**: Verdicts go to `data/index.jsonl` as append-only rows `{at, id, read_upto, verdict, note}`; `digest.js` reads it to know what is already read (`--new`).
 - **Minimal Code / Command Reference**:
   ```bash
@@ -76,4 +91,8 @@ So the real question is not "script or agent" — it is "which parts are mechani
 - ALWAYS share the cache filename rule from one module. Duplicated naming logic is a silent cache-drift bug.
 - ALWAYS make a script describe itself: the contract lives in its `-h` / `--help` output, never only in a header comment the agent must read code to find.
 - ALWAYS share one option parser. Duplicated parsing logic is how `--from 3` ends up silently ignored.
+- ALWAYS give the LLM caller a frozen entry point (`crawl.ts bootstrap | daily` + `data/terms.txt`). NEVER let it pick keywords, date flags, or URLs at call time — free parameters are generalization surface.
+- NEVER use "search printed 0 URLs" as a drain condition: the live month's page 1 is always re-queued. Use "same URL set as previous round" (steady state) instead.
+- NEVER advance the watermark after a fetch round with failures. Guard it: 0 failures or no write.
+- ALWAYS verify loop-termination logic with a fake fetcher harness before shipping — the real fetch path cannot run without an attached Chrome session, and the spin bug only showed up there.
 - ALWAYS add a short hash suffix when a cache filename is derived from lossy sanitising or truncation. Two queries mapping to one file means one of them is silently never fetched.

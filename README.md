@@ -14,11 +14,27 @@ bun run search.ts 招聘 内推码 招人 --new
 
 `data/` stays at the repo root.
 
+## The AI contract: two commands
+
+The agent never picks keywords, flags, or URLs. Terms live in `data/terms.txt` (one per
+line, `#` comments). There are exactly two entry points:
+
+```bash
+bun run crawl.ts bootstrap   # first ever run, or months behind: full history, loop until drained
+bun run crawl.ts daily       # every day after: watermark month to now, loop until drained
+```
+
+Both loop search→fetch internally until nothing is left to fetch, so there is no urls.txt
+dance and no manual watermark echo: `daily` advances the watermark itself, but only when a
+round finished with 0 failed URLs. Non-zero exit means Cloudflare (or a broken month): read
+the message, wait if told to, then run the SAME command again — the cache makes reruns free.
+When a green run finishes, the AI's job begins: judge (pending / digest / index, below).
+
 ## One round a day
 
 ```bash
-# 1. grab the last two weeks of search results (new threads only)
-bun run search.ts 招聘 内推码 招人 --new > urls.txt && bun run fetch.ts --file urls.txt
+# 1. fetch what is new since the watermark (this also advances the watermark on success)
+bun run crawl.ts daily
 
 # 2. see what is unopened / what has new replies
 bun run pending.ts --top=20
@@ -30,7 +46,7 @@ bun run digest.ts <topic_id> --chars=200
 echo '{"at":"'"$(date -u +%FT%TZ)"'","id":123456,"read_upto":45,"verdict":"在看","note":"上海后端,远程,要简历"}' >> data/index.jsonl
 ```
 
-`bun run pending.ts --urls` pipes straight into `bun run fetch.ts --file`:
+One-off gap checks (not part of the daily loop) still pipe into the generic fetcher:
 
 ```bash
 bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt
@@ -43,6 +59,9 @@ bun run pending.ts --urls --include-new > urls.txt && bun run fetch.ts --file ur
 ```
 
 ## Backfilling history
+
+Don't do it by hand: `bun run crawl.ts bootstrap` covers the whole grid for every term in
+`data/terms.txt`, looping until drained. What follows is how the plumbing underneath works.
 
 Slice by month, oldest to newest. Windows are whole UTC months on a fixed grid anchored at
 2023-01-01, so the same month always lands in the same file name: finished months are cached
@@ -61,17 +80,19 @@ months are skipped, only what is missing goes out.
 `--new` monitors the daily loop. It fetches from the month of the watermark in
 `data/search-state.json` (no file yet: last month) to now. A stale watermark costs nothing —
 the months in between are already cached — but if it is a full month or more old, `search.ts`
-warns. After a fetch round succeeds, advance the watermark (the exact line is printed on
-stderr):
+warns. `crawl.ts daily` advances the watermark itself; a manual run must do it by hand
+(the exact line is printed on stderr):
 
 ```bash
 bun run search.ts 招聘 --new > urls.txt && bun run fetch.ts --file urls.txt
 echo '{"last_new":"2026-10-29"}' > data/search-state.json
 ```
 
-## The four scripts
+## The five scripts
 
 | File | Does | Does not |
+|---|---|---|
+| `crawl.ts` | The AI entry point: terms file + bootstrap/daily, loops search→fetch, guards the watermark | Judge relevance, pick keywords at call time |
 |---|---|---|
 | `fetch.ts` | Takes a batch of URLs, writes to `data/raw/`, logs one line | Judge relevance, decide what to fetch |
 | `search.ts` | Works out which search URLs are still missing, prints one per line | Send requests, fetch post bodies |

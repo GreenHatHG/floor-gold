@@ -76,7 +76,7 @@ if (opts.new && (opts.since !== undefined || opts.until !== undefined)) {
   process.exit(2);
 }
 
-const PAGE_CAP = 50;
+const PAGE_CAP = 50; // API hard limit per page; a shorter page is the last page
 const PAGE_MAX = 40; // a month needing page 41 is not a month problem any more
 const ISO = (d: Date): string => d.toISOString().slice(0, 10);
 const dateArg = (name: string, raw: string): Date | null => {
@@ -231,8 +231,7 @@ for (const term of terms) {
     } else {
       stats.cached++;
     }
-    // A full page 1 may have more pages; the live month may also have grown past a full
-    // page 1 it had last time, so it is walked even when page 1 itself is queued.
+    // page 2 only exists if page 1 is full; the live month may outgrow its cached page 1, so re-walk it.
     if (first.length < PAGE_CAP && !live) continue;
     for (let p = 2; ; p++) {
       if (p > PAGE_MAX) tooBig(q, p);

@@ -1,6 +1,6 @@
 ---
 created_at: 2026-10-27
-updated_at: 2026-10-29
+updated_at: 2026-11-03
 topic: discourse-json-api-search-semantics
 status: resolved
 affected_modules: [linux.do-search, search.ts, pending.ts, fetch.ts, digest.ts]
@@ -51,11 +51,34 @@ Category `27` = 「非我莫属」, slug `job`. `/tag/招聘.json` also works.
 
 - **Attempt**: Quote the term (`"内推"`) to force exact matching.
   - **Failure Reason**: Returns only 36 topics and 1 real hit — worse, not better.
+- **Attempt**: Score relevance from page 1 only, guarded by `if (!relTotal)` (the 2026-10-29 `blurbHit`).
+  - **Failure Reason**: Two silent biases. (1) The guard meant only the FIRST cached month window ever scored — the number was a single-month sample, not the range. (2) Blurb-only matching misses title hits, and no weighting by `posts_count` treats a 200-reply topic equal to a 2-reply one. Also, scoring ran BEFORE fetch, so months fetched by that very run never counted.
+- **Attempt**: Normalize relevance to pct = hit / Σweight (not / Σmaxscore).
+  - **Failure Reason**: Upper bound becomes unpredictable (67%–100% depending on hit mix), so pcts are not comparable across terms or months. Divide by the MAX possible score instead.
 
 ## 3. Decision & Verified Solution
 
-- **Chosen Approach**: Month-window slicing on a fixed UTC grid anchored at 2023-01-01 (windows are `[2023-01+k, 2023-01+k+1)` for whole months k), plain keyword search (no `order:`), resuming from filenames on disk. `--since`/`--until`/`--new` only SELECT grid months — they never shift the keys — so finished months are cached forever; only the current, unfinished month is re-fetched and overwritten each run. `--new` starts at the month of the watermark in `data/search-state.json` (no file yet: last month); a stale watermark costs nothing because the months in between are already cached, but a full-month gap prints a warning. A month that would need page 41 makes `search.ts` exit 1: that month must be split by hand, never silently truncated.
-- **Key Changes**: `search.ts` rewritten (2026-10-29): monthly grid, exit-1 on page 40 full, `--until` option, `--new` watermark + stderr hint line for updating it, per-term `帖子含词` relevance line on stderr, flat paging loop. All four scripts: `data/` paths now join from `__dirname` directly (no `..`). Probe-verified: Sep 2026 招人 = 70 hits/2 pages; Jan 2024 = 9 hits; Jan 2023 = 1 hit (search reaches 2023, nothing pruned).
+- **Chosen Approach**: Month-window slicing on a fixed UTC grid anchored at 2023-01-01 (windows are `[2023-01+k, 2023-01+k+1)` for whole months k), plain keyword search (no `order:`), resuming from filenames on disk. `--since`/`--until`/`--new` only SELECT grid months — they never shift the keys — so finished months are cached forever; only the current, unfinished month is re-fetched and overwritten each run. `--new` starts at the month of the watermark in `data/search-state.json` (no file yet: last month); a stale watermark costs nothing because the months in between are already cached, but a full-month gap prints a warning. A month that would need page 41 makes `search.ts` exit 1: that month must be split by hand, never silently truncated. Relevance scoring (rewritten 2026-11-03) runs AFTER the fetch loop over ALL cached pages of every month; score = title hit ×2 + blurb hit ×1, weighted by `posts_count` (clamped to ≥1); pct divides by max score (3×Σweight) so it stays 0–100 with 50% ≈ one of the two fields hits per post on average. Output is a per-month table on stderr; months with no cache show `数据未抓取`, never silently skipped. URL scheduling is unchanged.
+- **Key Changes**: `search.ts` rewritten (2026-10-29): monthly grid, exit-1 on page 40 full, `--until` option, `--new` watermark + stderr hint line for updating it, flat paging loop. Relevance rework (2026-11-03, commit 46de3ea): `scoreMonth(word, q)` replaces `blurbHit`; joins `posts[].topic_id` → `topics[]` for `title`/`posts_count`; second loop after fetch fills `relevance[term][]` per month; table rows `YYYY-MM  hit/total  pct`. All four scripts: `data/` paths now join from `__dirname` directly (no `..`). Probe-verified: Sep 2026 招人 = 70 hits/2 pages; Jan 2024 = 9 hits; Jan 2023 = 1 hit (search reaches 2023, nothing pruned).
+- **Minimal Code / Command Reference**:
+  ```ts
+  const scoreMonth = (word: string, q: string): { hit: number; total: number } | null => {
+    for (let p = 1; p <= PAGE_MAX; p++) {
+      const doc = JSON.parse(fs.readFileSync(path.join(RAW, searchFile(q, p === 1 ? null : p)), "utf8"));
+      if (!doc || !Array.isArray(doc.posts)) break;
+      const topics = new Map<number, FeedTopic>();
+      for (const t of doc.topics ?? []) topics.set(t.id, t);
+      for (const post of doc.posts) {
+        const t = post.topic_id === undefined ? undefined : topics.get(post.topic_id);
+        const w = Math.max(1, t?.posts_count ?? 1);
+        const s = (typeof t?.title === "string" && t.title.includes(word) ? 2 : 0)
+                + (typeof post.blurb === "string" && post.blurb.includes(word) ? 1 : 0);
+        hit += s * w; total += 3 * w;   // 3 = max per post, keeps pct in 0–100
+      }
+      if (doc.posts.length < PAGE_CAP) break;
+    }
+  };
+  ```
 - **Minimal Code / Command Reference**:
   ```ts
   // The grid: month 0 is 2023-01, windows are [monthStart(i), monthStart(i+1)).
@@ -70,7 +93,9 @@ Category `27` = 「非我莫属」, slug `job`. `/tag/招聘.json` also works.
 - NEVER add `order:latest` to a relevance search. It destroys CJK results.
 - NEVER page with `page=1`; the first page is no page, real paging begins at `page=2`.
 - NEVER use the category `latest` feed for deep history; use `after:`/`before:` windows.
-- ALWAYS measure a term's `帖子含词` ratio (hits / 50) before adding it to the term list. Below ~50%, replace the term or add `#非我莫属`.
+- ALWAYS measure a term's hit ratio before adding it to the term list. Below ~50%, replace the term or add `#非我莫属`.
+- ALWAYS score relevance over ALL cached pages and AFTER the fetch loop; NEVER sample only page 1 of the first available month.
+- ALWAYS divide a weighted score by the MAX possible score (3×Σweight), never by Σweight alone — otherwise pct has no fixed upper bound and is not comparable.
 - ALWAYS anchor time windows on the fixed 2023-01-01 month grid. NEVER derive window endpoints from `new Date()` (today) — that is what broke cache hits before.
 - NEVER queue page N+1 when page N is not on disk; only a FULL cached page N earns a page N+1 request.
 - NEVER join `data/` paths with `path.join(__dirname, "..")`; `__dirname` is already the repo root under `bun run`.

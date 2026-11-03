@@ -1,0 +1,10 @@
+#!/bin/sh
+STAGED=$(git diff --cached --name-only -- '*.ts' package.json tsconfig.json biome.json)
+[ -z "$STAGED" ] && exit 0
+
+echo "Running biome + tsc..."
+npm run check || exit 1
+
+# Restage files possibly modified by formatting
+for f in $STAGED; do [ -f "$f" ] && git add "$f"; done
+echo "pre-commit checks passed"

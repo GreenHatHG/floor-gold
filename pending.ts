@@ -19,9 +19,9 @@ Options:
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
 Summary marks:
-  [跳过] you marked it skip or noise    [已判] judged, not skipped
-  新楼 new replies    补洞 a gap inside posts you already hold
-  (等楼号表) the id table must come back first; those posts are fetched on the next run
+  [skip] you marked it skip or noise    [done] judged, not skipped
+  new replies    gap-fill a gap inside posts you already hold
+  (waiting on post id table) the id table must come back first; those posts are fetched on the next run
 
 Reads data/raw/{topic,search,list,tag,site}/*.json, data/raw/ids/*.json (the post number
 tables that say which holes are already explained), data/index.jsonl (one judgement per
@@ -37,15 +37,15 @@ Exit codes: 0 ok · 2 bad arguments, for example --top 0
 import fs from "node:fs";
 import path from "node:path";
 import {
-  parseArgs,
-  UsageError,
-  type FeedDoc,
-  type FeedTopic,
-  type IdsDoc,
-  type IndexRow,
-  type NoteRow,
-  type Opts,
-  type TopicDoc,
+	type FeedDoc,
+	type FeedTopic,
+	type IdsDoc,
+	type IndexRow,
+	type NoteRow,
+	type Opts,
+	parseArgs,
+	type TopicDoc,
+	UsageError,
 } from "./lib";
 
 // data/ stays at the repo root. __dirname is already the repo root under bun run; a ".."
@@ -57,61 +57,61 @@ const NOTES = path.join(ROOT, "data", "notes.jsonl");
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
-  console.log(HELP);
-  process.exit(0);
+	console.log(HELP);
+	process.exit(0);
 }
 let opts: Opts = {};
 try {
-  ({ opts } = parseArgs(argv, { urls: "flag", "include-new": "flag", top: "value" }));
+	({ opts } = parseArgs(argv, { urls: "flag", "include-new": "flag", top: "value" }));
 } catch (e) {
-  if (!(e instanceof UsageError)) throw e;
-  console.error(e.message);
-  console.error("Usage: bun run pending.ts -h");
-  process.exit(2);
+	if (!(e instanceof UsageError)) throw e;
+	console.error(e.message);
+	console.error("Usage: bun run pending.ts -h");
+	process.exit(2);
 }
 const opt = (n: string, dflt: string | number): string => {
-  const v = opts[n];
-  return typeof v === "string" ? v : String(dflt);
+	const v = opts[n];
+	return typeof v === "string" ? v : String(dflt);
 };
 const urlsOnly = !!opts.urls;
 const includeNew = !!opts["include-new"];
 const TOP = (() => {
-  const raw = opt("top", 25);
-  const v = Number(raw);
-  if (!Number.isFinite(v) || v < 1) {
-    console.error(`--top must be a number >= 1, got: ${raw}`);
-    process.exit(2);
-  }
-  return v;
+	const raw = opt("top", 25);
+	const v = Number(raw);
+	if (!Number.isFinite(v) || v < 1) {
+		console.error(`--top must be a number >= 1, got: ${raw}`);
+		process.exit(2);
+	}
+	return v;
 })();
 
 const ls = (d: string): string[] => {
-  const p = path.join(RAW, d);
-  if (!fs.existsSync(p)) return [];
-  return fs
-    .readdirSync(p)
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => path.join(p, f));
+	const p = path.join(RAW, d);
+	if (!fs.existsSync(p)) return [];
+	return fs
+		.readdirSync(p)
+		.filter((f) => f.endsWith(".json"))
+		.map((f) => path.join(p, f));
 };
 const readJson = <T>(f: string): T | null => {
-  try {
-    return JSON.parse(fs.readFileSync(f, "utf8")) as T;
-  } catch {
-    return null;
-  }
+	try {
+		return JSON.parse(fs.readFileSync(f, "utf8")) as T;
+	} catch {
+		return null;
+	}
 };
 
 function readIndex(): Map<number, IndexRow> {
-  const out = new Map<number, IndexRow>();
-  if (!fs.existsSync(INDEX)) return out;
-  for (const line of fs.readFileSync(INDEX, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line) as IndexRow;
-      if (row && row.id != null) out.set(Number(row.id), Object.assign(out.get(Number(row.id)) || {}, row));
-    } catch {}
-  }
-  return out;
+	const out = new Map<number, IndexRow>();
+	if (!fs.existsSync(INDEX)) return out;
+	for (const line of fs.readFileSync(INDEX, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const row = JSON.parse(line) as IndexRow;
+			if (row && row.id != null) out.set(Number(row.id), Object.assign(out.get(Number(row.id)) || {}, row));
+		} catch {}
+	}
+	return out;
 }
 const idx = readIndex();
 
@@ -122,204 +122,210 @@ const idx = readIndex();
 const asked = new Map<string, number>();
 const missing = new Set<string>();
 if (fs.existsSync(NOTES)) {
-  for (const line of fs.readFileSync(NOTES, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line) as NoteRow;
-      if (row.t === "missing" && row.id != null) for (const p of row.pid || []) missing.add(`${row.id}:${p}`);
-      if (row.t === "asked" && row.id != null) asked.set(`${row.id}:${row.anchor}`, Number(row.high));
-    } catch {}
-  }
+	for (const line of fs.readFileSync(NOTES, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const row = JSON.parse(line) as NoteRow;
+			if (row.t === "missing" && row.id != null) for (const p of row.pid || []) missing.add(`${row.id}:${p}`);
+			if (row.t === "asked" && row.id != null) asked.set(`${row.id}:${row.anchor}`, Number(row.high));
+		} catch {}
+	}
 }
 const noteRows: NoteRow[] = [];
 
 // ---- what we have locally ----
 interface LocalTopic {
-  title?: string;
-  nums: number[];
-  max: number;
-  highest: number;
+	title?: string;
+	nums: number[];
+	max: number;
+	highest: number;
 }
 const local = new Map<number, LocalTopic>();
 const knownIds = new Set<string>();
 for (const f of ls("topic")) {
-  const t = readJson<TopicDoc>(f);
-  if (!t || t.id == null) continue;
-  const posts = (t.post_stream && t.post_stream.posts) || [];
-  const nums = posts.map((p) => p.post_number).sort((a, b) => a - b);
-  for (const p of posts) knownIds.add(`${t.id}:${p.id}`);
-  local.set(Number(t.id), {
-    title: t.title,
-    nums,
-    max: nums.length ? nums[nums.length - 1] : 0,
-    highest: t.highest_post_number || 0,
-  });
+	const t = readJson<TopicDoc>(f);
+	if (!t || t.id == null) continue;
+	const posts = t.post_stream?.posts || [];
+	const nums = posts.map((p) => p.post_number).sort((a, b) => a - b);
+	for (const p of posts) knownIds.add(`${t.id}:${p.id}`);
+	local.set(Number(t.id), {
+		title: t.title,
+		nums,
+		max: nums.length ? nums[nums.length - 1] : 0,
+		highest: t.highest_post_number || 0,
+	});
 }
 
 // ---- what the server said, from any list or search we already fetched ----
 interface ServerTopic {
-  title?: string;
-  highest: number;
-  last: string | null;
-  category_id?: number;
+	title?: string;
+	highest: number;
+	last: string | null;
+	category_id?: number;
 }
 const server = new Map<number, ServerTopic>();
 const feeds = [...ls("search"), ...ls("list"), ...ls("tag"), ...ls("site")];
 for (const f of feeds) {
-  const doc = readJson<FeedDoc>(f);
-  const topics: FeedTopic[] = (doc && doc.topics) || (doc && doc.topic_list && doc.topic_list.topics) || [];
-  for (const t of topics) {
-    if (!t || t.id == null) continue;
-    const prev = server.get(Number(t.id)) || { highest: 0, last: null };
-    server.set(Number(t.id), {
-      title: t.title || prev.title,
-      highest: Math.max(prev.highest || 0, t.highest_post_number || t.posts_count || 0),
-      last: [prev.last, t.last_posted_at].filter(Boolean).sort().pop() || null,
-      category_id: t.category_id != null ? t.category_id : prev.category_id,
-    });
-  }
+	const doc = readJson<FeedDoc>(f);
+	const topics: FeedTopic[] = doc?.topics || doc?.topic_list?.topics || [];
+	for (const t of topics) {
+		if (!t || t.id == null) continue;
+		const prev = server.get(Number(t.id)) || { highest: 0, last: null };
+		server.set(Number(t.id), {
+			title: t.title || prev.title,
+			highest: Math.max(prev.highest || 0, t.highest_post_number || t.posts_count || 0),
+			last: [prev.last, t.last_posted_at].filter(Boolean).sort().pop() || null,
+			category_id: t.category_id != null ? t.category_id : prev.category_id,
+		});
+	}
 }
 
 const md = (iso?: string | null): string => {
-  if (!iso) return "??-??";
-  const d = new Date(iso);
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+	if (!iso) return "??-??";
+	const d = new Date(iso);
+	const p = (n: number): string => String(n).padStart(2, "0");
+	return `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 const skipped = (id: number): boolean =>
-  ["skip", "noise", "已看", "跳过"].includes(String((idx.get(id) || {}).verdict || "").toLowerCase());
+	["skip", "noise", "seen", "已看", "跳过"].includes(String(idx.get(id)?.verdict || "").toLowerCase());
 
 // ---- new: in a feed, never opened ----
 const fresh = [...server.entries()]
-  .filter(([id]) => !local.has(id))
-  .map(([id, s]) => Object.assign({ id }, s))
-  .sort((a, b) => String(b.last).localeCompare(String(a.last)));
+	.filter(([id]) => !local.has(id))
+	.map(([id, s]) => Object.assign({ id }, s))
+	.sort((a, b) => String(b.last).localeCompare(String(a.last)));
 
 // ---- changed: opened before, and the server says something moved (or we know we have a hole) ----
 // A hole memo is permanent: once we asked for the ids above a hole and got nothing, it is a deleted post.
 // A tail memo is only valid at the server height it was taken at -- otherwise a reply that landed after
 // the last ask would stay invisible forever.
 interface Change {
-  id: number;
-  title?: string;
-  localMax: number;
-  serverHighest: number | null;
-  from: number;
-  to: number;
-  kind: "补洞" | "新楼";
-  urls: string[];
-  waitingOn: string | null;
-  last?: string | null;
+	id: number;
+	title?: string;
+	localMax: number;
+	serverHighest: number | null;
+	from: number;
+	to: number;
+	kind: "gap-fill" | "new";
+	urls: string[];
+	waitingOn: string | null;
+	last?: string | null;
 }
 const IDS_CHUNK = 50;
 const changed: Change[] = [];
 for (const [id, l] of local.entries()) {
-  const s = server.get(id);
-  // the topic file itself remembers the highest post number at fetch time, so an unfinished topic
-  // is spotted even when no feed we fetched happens to mention it
-  const high = Math.max((s && s.highest) || 0, l.highest || 0);
-  const have = new Set(l.nums);
-  const serverAhead = high > l.max;
+	const s = server.get(id);
+	// the topic file itself remembers the highest post number at fetch time, so an unfinished topic
+	// is spotted even when no feed we fetched happens to mention it
+	const high = Math.max(s?.highest || 0, l.highest || 0);
+	const have = new Set(l.nums);
+	const serverAhead = high > l.max;
 
-  const holes: [number, number][] = [];
-  for (let n = 1; n <= l.max; n++) {
-    if (have.has(n)) continue;
-    const last = holes[holes.length - 1];
-    if (last && n === last[1] + 1) last[1] = n;
-    else holes.push([n, n]);
-  }
-  const openHoles = holes.filter(([a]) => a > 1 && !readJson(path.join(RAW, "ids", `${id}-at-${a - 1}.json`)));
-  if (!serverAhead && !openHoles.length) continue;
+	const holes: [number, number][] = [];
+	for (let n = 1; n <= l.max; n++) {
+		if (have.has(n)) continue;
+		const last = holes[holes.length - 1];
+		if (last && n === last[1] + 1) last[1] = n;
+		else holes.push([n, n]);
+	}
+	const openHoles = holes.filter(([a]) => a > 1 && !readJson(path.join(RAW, "ids", `${id}-at-${a - 1}.json`)));
+	if (!serverAhead && !openHoles.length) continue;
 
-  const pick = openHoles.length
-    ? { anchor: openHoles[0][0] - 1, range: openHoles[0], tail: false }
-    : { anchor: l.max, range: [l.max + 1, high] as [number, number], tail: true };
+	const pick = openHoles.length
+		? { anchor: openHoles[0][0] - 1, range: openHoles[0], tail: false }
+		: { anchor: l.max, range: [l.max + 1, high] as [number, number], tail: true };
 
-  const urls: string[] = [];
-  let waitingOn: string | null = null;
-  const idsPath = path.join(RAW, "ids", `${id}-at-${pick.anchor}.json`);
-  const idsDoc = readJson<IdsDoc>(idsPath);
-  const tailIsFresh = !pick.tail || asked.get(`${id}:${pick.anchor}`) === high;
+	const urls: string[] = [];
+	let waitingOn: string | null = null;
+	const idsPath = path.join(RAW, "ids", `${id}-at-${pick.anchor}.json`);
+	const idsDoc = readJson<IdsDoc>(idsPath);
+	const tailIsFresh = !pick.tail || asked.get(`${id}:${pick.anchor}`) === high;
 
-  if (!idsDoc || !tailIsFresh) {
-    // a stale ids table would answer the old question again; drop it so the next run must ask
-    if (pick.tail && idsDoc) {
-      try {
-        fs.unlinkSync(idsPath);
-      } catch {}
-    }
-    urls.push(`/t/${id}/post_ids.json?post_number=${pick.anchor}`);
-    waitingOn = "楼号表";
-    if (pick.tail) noteRows.push({ t: "asked", id, anchor: pick.anchor, high });
-  } else {
-    const miss = (idsDoc.post_ids || []).map(String).filter((x) => !knownIds.has(`${id}:${x}`) && !missing.has(`${id}:${x}`));
-    for (let i = 0; i < miss.length; i += IDS_CHUNK) {
-      const chunk = miss.slice(i, i + IDS_CHUNK);
-      urls.push(`/t/${id}/posts.json?` + chunk.map((x) => `post_ids[]=${x}`).join("&"));
-    }
-  }
-  if (!urls.length) continue;
+	if (!idsDoc || !tailIsFresh) {
+		// a stale ids table would answer the old question again; drop it so the next run must ask
+		if (pick.tail && idsDoc) {
+			try {
+				fs.unlinkSync(idsPath);
+			} catch {}
+		}
+		urls.push(`/t/${id}/post_ids.json?post_number=${pick.anchor}`);
+		waitingOn = "post id table";
+		if (pick.tail) noteRows.push({ t: "asked", id, anchor: pick.anchor, high });
+	} else {
+		const miss = (idsDoc.post_ids || [])
+			.map(String)
+			.filter((x) => !knownIds.has(`${id}:${x}`) && !missing.has(`${id}:${x}`));
+		for (let i = 0; i < miss.length; i += IDS_CHUNK) {
+			const chunk = miss.slice(i, i + IDS_CHUNK);
+			urls.push(`/t/${id}/posts.json?${chunk.map((x) => `post_ids[]=${x}`).join("&")}`);
+		}
+	}
+	if (!urls.length) continue;
 
-  changed.push({
-    id,
-    title: l.title,
-    localMax: l.max,
-    serverHighest: s ? s.highest : null,
-    from: pick.range[0],
-    to: pick.range[1],
-    kind: openHoles.length ? "补洞" : "新楼",
-    urls,
-    waitingOn,
-    last: s && s.last,
-  });
+	changed.push({
+		id,
+		title: l.title,
+		localMax: l.max,
+		serverHighest: s ? s.highest : null,
+		from: pick.range[0],
+		to: pick.range[1],
+		kind: openHoles.length ? "gap-fill" : "new",
+		urls,
+		waitingOn,
+		last: s?.last,
+	});
 }
 changed.sort((a, b) => String(b.last).localeCompare(String(a.last)));
 
 // ---- output ----
 const allUrls = [
-  ...changed.flatMap((c) => c.urls),
-  ...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : []),
+	...changed.flatMap((c) => c.urls),
+	...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : []),
 ];
 if (urlsOnly) {
-  if (allUrls.length) console.log(allUrls.join("\n"));
-  if (noteRows.length) fs.appendFileSync(NOTES, noteRows.map((r) => JSON.stringify(r)).join("\n") + "\n");
-  process.exit(0);
+	if (allUrls.length) console.log(allUrls.join("\n"));
+	if (noteRows.length) fs.appendFileSync(NOTES, `${noteRows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+	process.exit(0);
 }
 
-console.log(`本地 ${local.size} 个主题 · 服务器视图 ${server.size} 个 · 新帖 ${fresh.length} · 有更新 ${changed.length}`);
+console.log(
+	`local ${local.size} topics · server view ${server.size} · new ${fresh.length} · updated ${changed.length}`,
+);
 if (!feeds.length) {
-  console.log("\n还没有任何搜索或列表数据。先拉一次：");
-  console.log('  bun run fetch.ts "/search.json?q=招聘"');
-  if (!changed.length) process.exit(0);
-  console.log("（下面的更新是从帖子文件自己记住的最高楼号看出来的）");
+	console.log("\nNo search or list data yet. Fetch once first:");
+	console.log('  bun run fetch.ts "/search.json?q=招聘"');
+	if (!changed.length) process.exit(0);
+	console.log("(updates below are read from the highest post number remembered in the topic files themselves)");
 }
 
 if (fresh.length) {
-  console.log(`\n=== 没打开过 (${fresh.length}) ===`);
-  for (const t of fresh.slice(0, TOP)) {
-    const mark = skipped(t.id) ? "[跳过] " : idx.has(t.id) ? "[已判] " : "";
-    console.log(`${mark}${t.id}  ${md(t.last)}  c${t.category_id || "?"}  ${t.title || "(无标题)"}`);
-  }
-  if (fresh.length > TOP) console.log(`… 还有 ${fresh.length - TOP} 个，用 --top= 看更多`);
+	console.log(`\n=== never opened (${fresh.length}) ===`);
+	for (const t of fresh.slice(0, TOP)) {
+		const mark = skipped(t.id) ? "[skip] " : idx.has(t.id) ? "[done] " : "";
+		console.log(`${mark}${t.id}  ${md(t.last)}  c${t.category_id || "?"}  ${t.title || "(no title)"}`);
+	}
+	if (fresh.length > TOP) console.log(`… and ${fresh.length - TOP} more, use --top= to see more`);
 }
 
 if (changed.length) {
-  console.log(`\n=== 有更新 (${changed.length}) ===`);
-  for (const c of changed) {
-    const bits = [`${c.id}`, md(c.last), c.title || "", `${c.kind} ${c.from}-${c.to}`];
-    if (c.waitingOn) bits.push(`(等${c.waitingOn})`);
-    console.log(bits.join("  "));
-    for (const u of c.urls) console.log(`    ${u}`);
-  }
+	console.log(`\n=== updated (${changed.length}) ===`);
+	for (const c of changed) {
+		const bits = [`${c.id}`, md(c.last), c.title || "", `${c.kind} ${c.from}-${c.to}`];
+		if (c.waitingOn) bits.push(`(waiting on ${c.waitingOn})`);
+		console.log(bits.join("  "));
+		for (const u of c.urls) console.log(`    ${u}`);
+	}
 }
 
 const unknown = [...local.keys()].filter((id) => !server.has(id)).length;
-if (unknown) console.log(`\n(${unknown} 个本地主题不在任何已拉取的列表里，无法判断有没有新回复)`);
+if (unknown)
+	console.log(`\n(${unknown} local topics are not in any fetched list, cannot tell if they have new replies)`);
 
 if (allUrls.length) {
-  console.log(`\n拉这些：\n  bun run fetch.ts ${allUrls.map((u) => `"${u}"`).join(" ")}`);
-  console.log(`或：bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt`);
+	console.log(`\nfetch these:\n  bun run fetch.ts ${allUrls.map((u) => `"${u}"`).join(" ")}`);
+	console.log(`or: bun run pending.ts --urls > urls.txt && bun run fetch.ts --file urls.txt`);
 }
-if (!includeNew && fresh.length) console.log(`(没打开过的帖不在 --urls 里；想一起拉就加 --include-new)`);
+if (!includeNew && fresh.length)
+	console.log(`(never-opened topics are not in --urls; add --include-new to fetch them too)`);
 
-if (noteRows.length) fs.appendFileSync(NOTES, noteRows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+if (noteRows.length) fs.appendFileSync(NOTES, `${noteRows.map((r) => JSON.stringify(r)).join("\n")}\n`);

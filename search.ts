@@ -28,8 +28,8 @@ months between the watermark and now are already cached. The current (unfinished
 the one exception: it is re-fetched and overwritten on every run, because a live month grows.
 
 Prints: one URL per line on stdout, oldest month first. On stderr: stats, a per-term
-relevance check (帖子含词, below half means the word is weak), and with --new the one-line
-watermark update to run after fetch.ts succeeds. Sends no request.
+per-month relevance table (帖子含词加权分, -- means that month is not cached yet), and with
+--new the one-line watermark update to run after fetch.ts succeeds. Sends no request.
 
 Paging: page=1 is the first page, same as no page, so paging starts at 2 and nothing is
 fetched twice; a month that would need page 41 is too big for one window — the program exits 1
@@ -87,7 +87,11 @@ const dateArg = (name: string, raw: string): Date | null => {
 };
 
 // The grid: month 0 is 2023-01, windows are [monthStart(i), monthStart(i+1)).
+// i = 20 → new Date(Date.UTC(2023, 20, 1))  →  Sun Sep 01 2024 08:00:00 GMT+0800
 const monthStart = (i: number): Date => new Date(Date.UTC(2023, i, 1));
+
+//d = 2023-01-15 UTC → (2023-2023)*12 + 0 = 0
+//d = 2024-03-01 UTC → (2024-2023)*12 + 2 = 14
 const monthIndexOf = (d: Date): number => (d.getUTCFullYear() - 2023) * 12 + d.getUTCMonth();
 
 const now = new Date();
@@ -152,26 +156,48 @@ if (opts.new) {
   endIdx = liveIdx;
 }
 
-// posts[].blurb is in every search response; it is the only cheap way to score a word.
-const blurbHit = (word: string, q: string): { hit: number; total: number } | null => {
-  let posts: { blurb?: string }[];
-  try {
-    const d = JSON.parse(fs.readFileSync(path.join(RAW, searchFile(q, null)), "utf8")) as FeedDoc & {
-      posts?: { blurb?: string }[];
-    };
-    if (!d || !Array.isArray(d.posts)) return null;
-    posts = d.posts;
-  } catch {
-    return null;
+// Scoring runs AFTER the fetch loop, over every cached page of every month, so freshly
+// fetched months count too. posts[] carries blurb and topic_id; topics[] carries title and
+// posts_count — joined by topic_id. score = (title hit ×2 + blurb hit ×1) weighted by
+// posts_count; total = 3 × Σ weights, so pct stays in 0–100 and 50% ≈ one of the two
+// fields hits per post on average.
+interface SearchPost {
+  topic_id?: number;
+  blurb?: string;
+}
+const scoreMonth = (word: string, q: string): { hit: number; total: number } | null => {
+  if (!word) return null;
+  let hit = 0;
+  let total = 0;
+  let pages = 0;
+  for (let p = 1; p <= PAGE_MAX; p++) {
+    let doc: (FeedDoc & { posts?: SearchPost[] }) | null = null;
+    try {
+      doc = JSON.parse(fs.readFileSync(path.join(RAW, searchFile(q, p === 1 ? null : p)), "utf8"));
+    } catch {
+      doc = null;
+    }
+    if (!doc || !Array.isArray(doc.posts)) break;
+    const topics = new Map<number, FeedTopic>();
+    for (const t of doc.topics ?? []) topics.set(t.id, t);
+    for (const post of doc.posts) {
+      const t = post.topic_id === undefined ? undefined : topics.get(post.topic_id);
+      const w = Math.max(1, t?.posts_count ?? 1);
+      const s =
+        (typeof t?.title === "string" && t.title.includes(word) ? 2 : 0) +
+        (typeof post.blurb === "string" && post.blurb.includes(word) ? 1 : 0);
+      hit += s * w;
+      total += 3 * w;
+    }
+    pages++;
+    if (doc.posts.length < PAGE_CAP) break;
   }
-  if (!word || !posts.length) return null;
-  const hit = posts.filter((p) => typeof p.blurb === "string" && p.blurb.includes(word)).length;
-  return { hit, total: posts.length };
+  return pages ? { hit, total } : null;
 };
 
 const urls: string[] = [];
 const stats = { windows: 0, cached: 0, queued: 0 };
-const relevance: Record<string, { hit: number; total: number }> = {};
+const relevance: Record<string, ({ hit: number; total: number } | null)[]> = {};
 
 const tooBig = (q: string, p: number): never => {
   console.error(`\n[停] ${q} 需要第 ${p} 页，一个月装不下了。`);
@@ -181,8 +207,7 @@ const tooBig = (q: string, p: number): never => {
 
 for (const term of terms) {
   const word = term.trim().split(/\s+/)[0];
-  let relHit = 0;
-  let relTotal = 0;
+  relevance[term] = [];
   for (let mi = startIdx; mi <= endIdx; mi++) {
     const a = monthStart(mi);
     const b = monthStart(mi + 1);
@@ -206,13 +231,6 @@ for (const term of terms) {
     } else {
       stats.cached++;
     }
-    if (!relTotal) {
-      const r = blurbHit(word, q);
-      if (r) {
-        relHit = r.hit;
-        relTotal = r.total;
-      }
-    }
     // A full page 1 may have more pages; the live month may also have grown past a full
     // page 1 it had last time, so it is walked even when page 1 itself is queued.
     if (first.length < PAGE_CAP && !live) continue;
@@ -228,19 +246,33 @@ for (const term of terms) {
       if (t.length < PAGE_CAP) break;
     }
   }
-  relevance[term] = { hit: relHit, total: relTotal };
+  for (let mi = startIdx; mi <= endIdx; mi++) {
+    const q = `${term} after:${ISO(monthStart(mi))} before:${ISO(monthStart(mi + 1))}`;
+    relevance[term].push(scoreMonth(word, q));
+  }
 }
 
 console.error(
   `${terms.length} 个词 · ${stats.windows} 个月窗口 · 缓存命中 ${stats.cached} 页 · 待抓 ${stats.queued} 个请求`
 );
 for (const term of terms) {
-  const r = relevance[term];
-  if (!r.total) continue;
-  const pct = Math.round((r.hit / r.total) * 100);
-  console.error(
-    `词频 ${term}: ${r.hit}/${r.total} 帖子含词 (${pct}%)${pct < 50 ? " — 低于一半，考虑换词或加 #非我莫属" : ""}`
-  );
+  const months = relevance[term];
+  const any = months.find((r) => r && r.total > 0);
+  if (!any) {
+    console.error(`词频 ${term}: 暂无缓存，抓取完成后再跑一次即可出表`);
+    continue;
+  }
+  console.error(`词频 ${term}（标题×2 + 摘要×1，按帖子数加权）:`);
+  for (let i = 0; i < months.length; i++) {
+    const r = months[i];
+    const label = ISO(monthStart(startIdx + i)).slice(0, 7);
+    if (!r || !r.total) {
+      console.error(`  ${label}  --        数据未抓取`);
+      continue;
+    }
+    const pct = Math.round((r.hit / r.total) * 100);
+    console.error(`  ${label}  ${String(r.hit).padStart(6)}/${String(r.total).padEnd(6)} ${pct}%`);
+  }
 }
 if (newOnly) {
   console.error("fetch 成功后更新水位线（复制运行即可）:");

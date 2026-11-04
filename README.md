@@ -1,182 +1,58 @@
 # linux.do job search
 
-Uses `playwright-cli` to attach to the Chrome you already logged in with, and talks to Discourse's JSON API. The scripts only move data around. All judging is left to the agent.
+Crawls and filters job posts on linux.do. The scripts talk to the Discourse JSON API
+through your logged-in Chrome (`playwright-cli` attach) and only move data. Whether a
+post is worth reading is judged by an AI agent, not by the scripts.
 
-## Run with Bun
+The full AI-agent documentation (usage steps, data contracts, traps we hit) lives in
+[AGENTS.md](AGENTS.md).
 
-Sources are TypeScript under `src/`, run directly with [Bun](https://bun.sh) — no build step. Nothing is compiled, so there is no `dist/` to go stale.
+## What it does
+
+One crawl round a day: for each keyword in `data/terms.txt` (招聘 / 内推 / 实习 and so
+on), it searches linux.do in weekly slices and saves the results to `data/raw/`. After
+that, the AI summarizes each post and records its verdict in `data/index.jsonl` for
+later review.
+
+## Quick start
+
+1. Log into linux.do in Chrome, then attach playwright-cli:
 
 ```bash
-bun run src/search.ts 招聘 内推码 招人 --new
+TOKEN=$(head -1 ~/.pi/chrome-extension-token.txt) && PLAYWRIGHT_MCP_EXTENSION_TOKEN=$TOKEN playwright-cli attach --extension=chrome
 ```
 
-`tsc` is kept for type checks only: `npm run typecheck`.
+2. First run (or far behind):
 
-`data/` stays at the repo root.
+```bash
+bun run src/crawl.ts bootstrap
+```
 
-## Layout
+3. Then once a day:
+
+```bash
+bun run src/crawl.ts daily
+```
+
+A non-zero exit usually means Cloudflare blocked us: wait a few minutes and rerun the
+SAME command. The cache makes reruns almost free.
+
+## Environment
+
+- [Bun](https://bun.sh) runs `src/*.ts` directly, no build step.
+- `npm run typecheck` (tsc checks types only), `bunx @biomejs/biome@2.3.5 check src/` (lint).
+- All data sits in `data/` at the repo root (not committed).
+
+## Code layout
 
 ```
 src/crawl.ts           AI entry point: bootstrap / daily loop
-src/search.ts          CLI: which week windows are missing (prints URLs)
-src/fetch.ts           CLI: batch-fetch URLs through logged-in Chrome
+src/search.ts          CLI: which week windows are missing (prints URLs, sends nothing)
+src/fetch.ts           CLI: batch-fetch URLs, write to data/raw/
 src/pending.ts         CLI: local disk vs server gaps
 src/digest.ts          CLI: one topic file → short text digest
-src/core/search-core   importable search logic (no exit, no printing)
-src/core/fetch-core    importable fetch logic; crawl.ts calls it directly
-src/lib/               paths, arg parser, naming rule, JSON types
+src/core/              importable core logic (no exit, no printing)
+src/lib/               paths, arg parsing, naming rule, JSON types
 ```
 
-`crawl.ts` imports the cores directly — no `spawnSync` glue. The four CLIs stay runnable
-standalone, each as a thin wrapper over its core.
-
-## The AI contract: two commands
-
-The agent never picks keywords, flags, or URLs. Terms live in `data/terms.txt` (one per
-line, `#` comments). There are exactly two entry points:
-
-```bash
-bun run src/crawl.ts bootstrap   # first ever run, or months behind: full history, loop until drained
-bun run src/crawl.ts daily       # every day after: watermark week to now, loop until drained
-```
-
-Both loop search→fetch internally until nothing is left to fetch, so there is no urls.txt
-dance and no manual watermark echo: `daily` advances the watermark itself, but only when a
-round finished with 0 failed URLs. Non-zero exit means Cloudflare (or a broken window): read
-the message, wait if told to, then run the SAME command again — the cache makes reruns free.
-When a green run finishes, the AI's job begins: judge (pending / digest / index, below).
-
-## One round a day
-
-```bash
-# 1. fetch what is new since the watermark (this also advances the watermark on success)
-bun run src/crawl.ts daily
-
-# 2. see what is unopened / what has new replies
-bun run src/pending.ts --top=20
-
-# 3. peek at a few summaries (cheap on context)
-bun run src/digest.ts <topic_id> --chars=200
-
-# 4. write down your call (append one line, never rewrite the file)
-echo '{"at":"'"$(date -u +%FT%TZ)"'","id":123456,"read_upto":45,"verdict":"在看","note":"上海后端,远程,要简历"}' >> data/index.jsonl
-```
-
-One-off gap checks (not part of the daily loop) still pipe into the generic fetcher:
-
-```bash
-bun run src/pending.ts --urls > urls.txt && bun run src/fetch.ts --file urls.txt
-```
-
-`--urls` only prints threads with updates. Add `--include-new` to also pull the ones you never opened:
-
-```bash
-bun run src/pending.ts --urls --include-new > urls.txt && bun run src/fetch.ts --file urls.txt
-```
-
-## Backfilling history
-
-Don't do it by hand: `bun run src/crawl.ts bootstrap` covers the whole grid for every term in
-`data/terms.txt`, looping until drained. What follows is how the plumbing underneath works.
-
-Slice by week, oldest to newest. Windows are 7 whole UTC days on a fixed grid anchored at
-2023-01-01, so the same week always lands in the same file name: finished weeks are cached
-forever, and `--since` / `--until` / `--new` only pick grid weeks, they never shift keys.
-Only the current (unfinished) week is re-fetched and overwritten every run, because it grows.
-
-```bash
-bun run src/search.ts 招聘 招人 求职 面经 hc > urls.txt && bun run src/fetch.ts --file urls.txt
-```
-
-A window that returns a full 50 queues its next page by itself, up to page 10 — the server
-rejects page > 10 with a 400, so a window reaching page 11 is drained by force. Weekly
-windows keep hits low enough that this never bites. If it dies, run the same command again —
-cached weeks are skipped, only what is missing goes out.
-
-`--new` monitors the daily loop. It fetches from the week of the watermark in
-`data/search-state.json` (no file yet: last week) to now. A stale watermark costs nothing —
-the weeks in between are already cached. `crawl.ts daily` advances the watermark itself; a
-manual run must do it by hand (the exact line is printed on stderr):
-
-```bash
-bun run src/search.ts 招聘 --new > urls.txt && bun run src/fetch.ts --file urls.txt
-echo '{"last_new":"2026-10-29"}' > data/search-state.json
-```
-
-## The five scripts
-
-| File | Does | Does not |
-|---|---|---|
-| `src/crawl.ts` | The AI entry point: terms file + bootstrap/daily, loops search→fetch, guards the watermark | Judge relevance, pick keywords at call time |
-| `src/fetch.ts` | Takes a batch of URLs, writes to `data/raw/`, logs one line | Judge relevance, decide what to fetch |
-| `src/search.ts` | Works out which search URLs are still missing, prints one per line | Send requests, fetch post bodies |
-| `src/pending.ts` | Compares disk against server, lists only the gaps | Score or rank by relevance |
-| `src/digest.ts` | One thread → a few hundred words of summary | Write anything to disk |
-
-`src/lib/` holds the naming rule shared by the scripts, the shared JSON shapes, and the one option parser they all use. If either the naming rule or the parser forks, the cache either re-downloads forever or never resumes.
-
-Every script explains itself. Read the contract from the tool, not from the code. One help text, same for both flags:
-
-```bash
-bun run src/fetch.ts -h        # same as --help: usage, options, disk behavior, exit codes
-bun run src/fetch.ts --help
-```
-
-It is capped at ~25 lines. Editor-facing notes (the URL → disk-path mapping, the traps)
-live in README, not in help output.
-Running a script with a required arg missing prints the help and exits 2.
-
-Options take a space: `--top 30`. `--top=30` works too. An unknown option is an error, not ignored —
-that is why a typo stops instead of quietly doing the wrong thing.
-
-## Disk layout
-
-Where each URL lands (the same URL always lands in the same file):
-
-```
-/t/<id>.json, /t/<id>/posts.json     data/raw/topic/<id>.json      merged thread, deduped by post id
-/t/<id>/post_ids.json?post_number=N  data/raw/ids/<id>-at-<N>.json post number table, a few dozen bytes
-/search.json?q=...&page=N            data/raw/search/<q>[-pN].json
-c/<id>/l/latest.json, /tag/<t>.json  data/raw/list|tag/...[-pN].json
-/latest, /top, /new, ...             data/raw/site/<name>[-<period>][-pN].json
-anything else                        data/raw/other/<path>-<hash>.json
-data/index.jsonl                     one line per judgement, the last line wins
-data/notes.jsonl                     machine bookkeeping: what was asked, which posts are gone
-data/search-state.json               --new watermark: {"last_new":"YYYY-MM-DD"}
-```
-
-`<q>` and `<tag>` are filenames, so punctuation inside them gets a short hash suffix. An
-existing topic file is merged, never replaced, and every write is atomic; the one exception
-is a corrupt old file, which is overwritten after a warning.
-
-`index.jsonl` fields: `id`, `read_upto` (last post you read), `verdict`, `note`. A `verdict` of `skip` or `noise` makes `pending.ts` mark the thread `[跳过]`.
-
-`notes.jsonl` is written by the scripts. Two kinds of line:
-
-- `{"t":"asked","id":...,"anchor":N,"high":H}` — asked once for posts after N, while the server's highest post number was H
-- `{"t":"missing","id":...,"pid":[...]}` — the server says these posts don't exist (deleted), don't ask again
-
-It exists for one reason: stop re-asking what was already asked and truly has nothing new, without letting deleted posts jam the flow. Delete it and the only cost is asking again.
-
-## Traps we hit (read before touching the scripts)
-
-- **`page=1` is the first page**, same as `page=2` being the second. So paging starts at 2; starting at 1 fetches everything twice.
-- **`posts_count` lies**: with deleted posts you get `posts_count=44` but `highest_post_number=45`. Only the latter can answer "any new replies?".
-- **`post_number=N` returns what comes after N**, N itself excluded.
-- **Do not add `order:latest`**. Measured: it re-sorts by recency and weak matches push out real hits — `内推` normally returns 39 hits, with `order:latest` only 1.
-- **Chinese keywords vary a lot in quality.** `招聘`: 35 of 50 results really contain the word. `内推`: 1 of 50, because the tokenizer also counts `推`. Before searching, check `帖子含词/50` in the search file name; below half, switch the word or add a `#非我莫属` category filter. `search.ts` now prints this ratio per term on stderr.
-- **Weekly grid, not monthly.** First measured 2026-10 (monthly): a busy month (招人, Sep 2026) is 70 hits = 2 pages, so monthly looked cheaper. But Discourse rejects search `page > 10` with a 400 — measured live: `page parameter must not be greater than 10`. 内推 in Oct 2026 alone filled 10 pages of 50, so every hit past 500 was silently unreachable. Weekly windows keep each window's hit count well under the 500 cap. Cost: more requests for the same span (4–5 per month instead of 1–2).
-- **`__dirname` under `bun run` is the script's own directory.** All data paths come from `src/lib/paths.ts`, which resolves `ROOT` two levels up from `src/lib` — never join `data/` from a script's own `__dirname`.
-- **Deleted posts leave a permanent gap.** `pending.ts` confirms once against the post number table and remembers it, so it never loops forever on a post that isn't there.
-- **The post number table is only valid at that height.** You can't trust "we asked last time" forever, or new replies arriving after the highest post was deleted would stay invisible. So the tail is re-asked every time, against the server's current highest post number.
-- **Background Chrome tabs slow timers down.** The rate limiter can't poll on a short interval; it has to take a ticket and sleep exactly, otherwise 20 requests take 157 seconds. (The limiter in `fetch.ts` already does this.)
-- **A 200 is not proof a post exists.** The shape check in `fetch.ts` guards `data/notes.jsonl`, so an error body can never be remembered as "post deleted".
-- **Real rate limit on `/search.json` is lower than you'd guess.** Measured on 85 search requests: 60 ok, 25 blocked. A block returns Cloudflare's `Just a moment...` HTML, **not** a Discourse 429, and no `retry-after`. Waiting 45 seconds brings it back. So the default is 2 per 3 seconds, 2 in parallel (`--rate=2/3000 --conc=2`), and batches are aligned the same way.
-- **Stop the whole batch on 429/403**, no retry. While Cloudflare is watching, retrying only makes it worse. URLs we didn't get are appended to `data/todo.txt`; a few minutes later `bun run src/fetch.ts --file data/todo.txt` picks up where it stopped.
-- **Don't backfill in one run.** Stop after a dozen or so requests, come back later. `search.ts` resumes from file names, so stopping costs nothing.
-
-## Word list
-
-Good: `招聘`, `招人`, `求职`, `面经`, `hc`, `jd`
-Bad: `内推` (bad tokenizing), `远程` (collides with proxy threads)
-To use a weak word anyway, add a category filter: `内推 #非我莫属`
+Every script explains itself with `-h` / `--help`. Design rules live in AGENTS.md.

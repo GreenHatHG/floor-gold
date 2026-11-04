@@ -1,6 +1,6 @@
 ---
 created_at: 2026-10-27
-updated_at: 2026-10-27
+updated_at: 2026-11-04
 topic: playwright-cli-attach-batch-fetch-ratelimit
 status: resolved
 affected_modules: [fetch.js, chrome-extension-attach, rate-limiter, cloudflare-block-handling]
@@ -36,12 +36,18 @@ Two separate problems live here: (a) how to batch many JSON fetches through that
 - **REVERSED — Attempt**: Run at the user-supplied budget of **6 requests / 3 s, 3 concurrent**, and retry `429` with exponential backoff (4 s, then 8 s).
   - **Failure Reason**: That budget is fine for cheap endpoints but too fast for `/search.json`. Measured over 85 search requests: **60 ok, 25 blocked**. The response is **not** a Discourse 429 — it is a Cloudflare challenge page (`<title>Just a moment...</title>`), **HTML, with no `retry-after` header**. So there was nothing to back off by, and the retry loop treated a human-verification challenge as a transient error: it kept hitting a wall Cloudflare was actively watching. Rate was the only lever left, and retrying was strictly harmful. Service came back after ~45 s of real silence.
 
+- **REVERSED 2026-11-04 — Attempt**: Run at **2 requests / 3 s, 2 concurrent** (the `2/3000` default).
+  - **Failure Reason**: Fine for short runs, but the `daily` crawl loop fires hundreds of requests and Cloudflare 429s arrived repeatedly mid-run (round 3 of the first daily crawl blocked, then again on later rounds). Measured blocks also happen AFTER ~30+ clean requests, not just at high burst rate. New default: `2/10000`, `--conc 1` — the user accepted slow crawls; blocks are the real cost, not time.
+
+- **Attempt**: Treat a Discourse 400 as a Cloudflare-style "wait and rerun" failure.
 - **Attempt**: Probe the true limit by firing a 25-request sequence at 2 s intervals to map where it breaks.
   - **Failure Reason**: This is someone's real account. Deliberately provoking a challenge to satisfy curiosity is not acceptable, and the previous 85-request run had already produced the answer. The user stopped it. **Do not run rate-limit probes against a live logged-in account.** Read the failure from a normal run instead: status code, whether the body is HTML, how long silence takes to clear it.
+- **Attempt**: Read the fetch error message as literal truth (`playwright-cli failed: Execution context was destroyed, most likely because of a navigation`).
+  - **Failure Reason**: One `daily` round died with this mid-batch — it is just the page navigating/tab reloading under the eval, not a logic bug. The correct reaction is the standard one: wait, rerun the same command; the cache absorbs everything already fetched.
 
 ## 3. Decision & Verified Solution
 
-- **Chosen Approach**: **Batch in, batch out** — Node passes a batch of URLs to one `eval`; the page holds the concurrency semaphore and the sliding window; Node aligns batch boundaries to the same quota so the limit is global, not per batch. Defaults lowered to **2 requests per 3 s, 2 concurrent**. A `429` or `403` **stops the whole batch immediately with no retry**, and every URL that did not land is written to `data/todo.txt` for a later run.
+- **Chosen Approach**: **Batch in, batch out** — Node passes a batch of URLs to one `eval`; the page holds the concurrency semaphore and the sliding window; Node aligns batch boundaries to the same quota so the limit is global, not per batch. Defaults (slowed 2026-11-04): **2 requests per 10 s, 1 concurrent** (`--rate=2/10000 --conc=1`), in both `fetch.ts` and `crawl.ts`'s direct `fetchAll` call. A `429` or `403` **stops the whole batch immediately with no retry**, and every URL that did not land is written to `data/todo.txt` for a later run. Cloudflare errors are recoverable: wait minutes, rerun the SAME command — the cache makes reruns free. A 400 (bad params, e.g. page > 10) is NOT recoverable by waiting: fix the query.
 - **Key Changes**: `fetch.js` — `runBatch()` returns `{results, blocked}`; page code sets a shared `blocked` flag so queued requests exit as `skipped` instead of firing; Node breaks out of the batch loop, appends remaining URLs to `notDone`, and writes `data/todo.txt`.
 - **Minimal Code / Command Reference**:
   ```js

@@ -14,8 +14,8 @@ Usage:
 Options:
   --file FILE       read one URL per line; blank lines and # comments are skipped
   --batch 20        URLs per playwright-cli call (default 20)
-  --rate 2/3000     2 requests per 3000 ms (default). Only raise it with proof.
-  --conc 2          requests in flight at once (default 2)
+  --rate 2/10000    2 requests per 10000 ms (default). Only raise it with proof.
+  --conc 1          requests in flight at once (default 1)
   --session chrome  playwright-cli session name (default chrome)
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
@@ -59,11 +59,12 @@ if (fileArg) {
 }
 if (!urls.length) showUsage(HELP, "fetch.ts");
 
-const rate = String(optOf(opts, "rate", "2/3000")).split("/");
+// slowed 2026-11: 2/3000 tripped Cloudflare 429 repeatedly
+const rate = String(optOf(opts, "rate", "2/10000")).split("/");
 const rateN = Number(rate[0]); // 2  → how many requests
 const rateWindow = Number(rate[1]); // 3000 → per how many ms
 if (!Number.isFinite(rateN) || rateN < 1 || !Number.isFinite(rateWindow) || rateWindow < 1) {
-	console.error(`--rate must look like 2/3000, got: ${optOf(opts, "rate", "")}`);
+	console.error(`--rate must look like 2/10000, got: ${optOf(opts, "rate", "")}`);
 	process.exit(2);
 }
 

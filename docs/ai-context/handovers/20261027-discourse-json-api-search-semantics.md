@@ -1,6 +1,6 @@
 ---
 created_at: 2026-10-27
-updated_at: 2026-11-03
+updated_at: 2026-11-04
 topic: discourse-json-api-search-semantics
 status: resolved
 affected_modules: [linux.do-search, search.ts, pending.ts, fetch.ts, digest.ts]
@@ -43,6 +43,12 @@ Category `27` = 「非我莫属」, slug `job`. `/tag/招聘.json` also works.
 - **Attempt**: First draft of the monthly rewrite queued `&page=2` for every month whose page 1 was not on disk ("92 requests for 46 months").
   - **Failure Reason**: Whether page 2 exists is unknown until page 1 comes back FULL (50 topics). Queueing it blind doubles the backfill for every quiet month (most months need 1 request). Fix: when page 1 is missing, queue page 1 ONLY; page 2+ is queued on a later run, after page 1 landed full. Caught by dry-run diff (46 expected URLs, got 92) before any request was sent.
 
+- **Attempt**: Page a window past page 10 (`PAGE_MAX = 40` in `search-core.ts`, designed for manual `--since`/`--until` splits).
+  - **Failure Reason**: Discourse **hard-rejects `page > 10`** with a 400: `您为请求提供了无效参数：page parameter must not be greater than 10` (`error_type: invalid_parameters`). Verified live via in-page `fetch`. A hot month (内推, Oct 2026) filled 10 pages of 50 = 500 hits, so page 11 was requested forever, failed with 400 forever, and the `daily` loop could never drain — the watermarked month never advanced. No rate change fixes this; the data past 500 hits per window is unreachable via `/search.json`.
+
+- **REVERSED — Attempt**: Monthly windows on the fixed 2023-01 grid (`monthStart`/`monthIndexOf`), `PAGE_MAX = 40`, exit 1 + "split by hand" for oversized months.
+  - **Failure Reason**: The page>10 server cap makes the cap reachable in practice for hot terms (500 hits/month for 内推), and `crawl.ts daily` cannot split months by hand. Monthly grid was measured cheaper (1–2 requests vs 4–5 per month), but cheap is worthless when it silently loses data. Demoted to pitfalls 2026-11-04; replaced by the weekly grid (Section 3).
+
 - **Attempt**: Treat `posts_count` as the cursor for "how far have I read".
   - **Failure Reason**: A deleted post makes `posts_count` (44) smaller than `highest_post_number` (45). Using `posts_count` silently skips a post, forever, with no error.
 
@@ -58,7 +64,8 @@ Category `27` = 「非我莫属」, slug `job`. `/tag/招聘.json` also works.
 
 ## 3. Decision & Verified Solution
 
-- **Chosen Approach**: Month-window slicing on a fixed UTC grid anchored at 2023-01-01 (windows are `[2023-01+k, 2023-01+k+1)` for whole months k), plain keyword search (no `order:`), resuming from filenames on disk. `--since`/`--until`/`--new` only SELECT grid months — they never shift the keys — so finished months are cached forever; only the current, unfinished month is re-fetched and overwritten each run. `--new` starts at the month of the watermark in `data/search-state.json` (no file yet: last month); a stale watermark costs nothing because the months in between are already cached, but a full-month gap prints a warning. A month that would need page 41 makes `search.ts` exit 1: that month must be split by hand, never silently truncated. Relevance scoring (rewritten 2026-11-03) runs AFTER the fetch loop over ALL cached pages of every month; score = title hit ×2 + blurb hit ×1, weighted by `posts_count` (clamped to ≥1); pct divides by max score (3×Σweight) so it stays 0–100 with 50% ≈ one of the two fields hits per post on average. Output is a per-month table on stderr; months with no cache show `数据未抓取`, never silently skipped. URL scheduling is unchanged.
+- **Chosen Approach**: (Rewritten 2026-11-04) **Weekly windows** on a fixed UTC grid anchored at 2023-01-01 — 7 whole UTC days, `[ANCHOR + i*WEEK_MS, ANCHOR + (i+1)*WEEK_MS)` with `ANCHOR = Date.UTC(2023,0,1)`, `WEEK_MS = 7*86400000`. Weekly keeps every window's hit count far below the server's 500-hit cap (10 pages × 50), so no window can overflow. Plain keyword search (no `order:`), resuming from filenames on disk. `--since`/`--until`/`--new` only SELECT grid weeks — they never shift the keys — so finished weeks are cached forever; only the live, unfinished week is re-fetched and overwritten each run. `--new` starts at the week of the watermark in `data/search-state.json` (no file yet: last week); a stale watermark costs nothing because the weeks in between are already cached. A window that fills all 10 pages is marked **saturated**: `SearchStats.saturated` names it, and both `search.ts` and `crawl.ts` print a WARNING on stderr — hits past 500 per window are invisible, narrow the term (add `#category`) — never silently drained. Relevance scoring (rewritten 2026-11-03, identifiers now `scoreWindow`) runs AFTER the fetch loop over ALL cached pages of every window; score = title hit ×2 + blurb hit ×1, weighted by `posts_count` (clamped to ≥1); pct divides by max score (3×Σweight) so it stays 0–100. Old month-keyed files under `data/raw/search/` are orphaned (never read again, never overwritten) — the first bootstrap on the weekly grid refetches full history.
+- **Key Changes**: `src/core/search-core.ts` — `windowStart`/`windowIndexOf` replace `monthStart`/`monthIndexOf`; `PAGE_MAX = 10`; `if (p > PAGE_MAX)` records `stats.saturated` and breaks instead of throwing. `src/search.ts` — HELP, `windowLabel` (YYYY-MM-DD), `saturated` WARNING lines, exit-code line fixed (bad `--since`/`--until` → exit 1, no keyword/conflict → exit 2). `src/crawl.ts` — `plan()` returns `saturated`, prints a WARNING block after each drained round. Cache keys need NO change: `searchFile(q)` derives the filename from the query string, and the query carries the `after:`/`before:` dates. Verified: contiguous non-overlapping windows, off-grid `--since/--until` snap down, `--new` works off the watermark date, idempotent across runs, typecheck + biome clean.
 - **Key Changes**: `search.ts` rewritten (2026-10-29): monthly grid, exit-1 on page 40 full, `--until` option, `--new` watermark + stderr hint line for updating it, flat paging loop. Relevance rework (2026-11-03, commit 46de3ea): `scoreMonth(word, q)` replaces `blurbHit`; joins `posts[].topic_id` → `topics[]` for `title`/`posts_count`; second loop after fetch fills `relevance[term][]` per month; table rows `YYYY-MM  hit/total  pct`. All four scripts: `data/` paths now join from `__dirname` directly (no `..`). Probe-verified: Sep 2026 招人 = 70 hits/2 pages; Jan 2024 = 9 hits; Jan 2023 = 1 hit (search reaches 2023, nothing pruned).
 - **Minimal Code / Command Reference**:
   ```ts
@@ -81,14 +88,18 @@ Category `27` = 「非我莫属」, slug `job`. `/tag/招聘.json` also works.
   ```
 - **Minimal Code / Command Reference**:
   ```ts
-  // The grid: month 0 is 2023-01, windows are [monthStart(i), monthStart(i+1)).
-  const monthStart = (i: number): Date => new Date(Date.UTC(2023, i, 1));
-  const monthIndexOf = (d: Date): number => (d.getUTCFullYear() - 2023) * 12 + d.getUTCMonth();
-  const q = `${term} after:${ISO(monthStart(mi))} before:${ISO(monthStart(mi + 1))}`; // NO order:latest
+  // The grid: weekly windows of 7 whole UTC days anchored at 2023-01-01.
+  const WEEK_MS = 7 * 86400000;
+  const ANCHOR = Date.UTC(2023, 0, 1);
+  const windowStart = (i: number): Date => new Date(ANCHOR + i * WEEK_MS);
+  const windowIndexOf = (d: Date): number => Math.floor((d.getTime() - ANCHOR) / WEEK_MS);
+  const PAGE_MAX = 10; // server rejects page > 10 with 400
+  const q = `${term} after:${ISO(windowStart(mi))} before:${ISO(windowStart(mi + 1))}`; // NO order:latest
   ```
 
 ## 4. Hard Constraints for Future AI
 
+- NEVER request search `page > 10`; the server answers 400 (`page parameter must not be greater than 10`). A window that fills 10 pages is saturated: warn, never silently drain.
 - ALWAYS use `highest_post_number`, never `posts_count`, for "is there anything new".
 - NEVER add `order:latest` to a relevance search. It destroys CJK results.
 - NEVER page with `page=1`; the first page is no page, real paging begins at `page=2`.

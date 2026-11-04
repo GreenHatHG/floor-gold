@@ -5,7 +5,7 @@ const HELP = `crawl.ts — the only commands the AI needs. Everything else is pl
 
 Usage:
   bun run src/crawl.ts bootstrap    full history, all terms in data/terms.txt, loop until drained
-  bun run src/crawl.ts daily        from the watermark month to now, loop until drained,
+  bun run src/crawl.ts daily        from the watermark week to now, loop until drained,
                                     auto-advance the watermark only when 0 urls failed
 
 Rules for the AI:
@@ -59,17 +59,20 @@ console.error(`terms: ${terms.join(" ")}`);
 
 // search returns the URL list as data now; keep writing urls.txt so fetch.ts stays usable
 // standalone and the queue is inspectable between rounds.
-const plan = async (mode: "full" | "new"): Promise<{ empty: boolean; urls: string[]; failed: boolean }> => {
+const plan = async (
+	mode: "full" | "new",
+): Promise<{ empty: boolean; urls: string[]; failed: boolean; saturated: string[] }> => {
 	try {
 		const r = search(terms, mode === "new" ? { mode: "new" } : { mode: "full" });
 		fs.writeFileSync(URLS_FILE, r.urls.join("\n") + (r.urls.length ? "\n" : ""));
-		if (!r.urls.length) return { empty: true, urls: [], failed: false };
+		if (!r.urls.length) return { empty: true, urls: [], failed: false, saturated: r.stats.saturated };
 		console.error(`[crawl] ${r.stats.queued} urls queued, ${r.stats.cached} pages cached`);
-		const report = await fetchAll(r.urls, { session: "chrome", batch: 20, conc: 2, rateN: 2, rateWindow: 3000 });
+		// slowed 2026-11: 2/3000 tripped Cloudflare 429 repeatedly; slow is fine, blocks are not
+		const report = await fetchAll(r.urls, { session: "chrome", batch: 20, conc: 1, rateN: 2, rateWindow: 10000 });
 		for (const line of report.log) console.log(line);
 		console.log(`\n${report.ok} ok, ${report.failed} failed, ${report.total} urls, ${report.seconds}s -> data/raw/`);
 		if (report.todo.length) console.log(`${report.todo.length} failed to fetch, written to data/todo.txt`);
-		return { empty: false, urls: r.urls, failed: report.failed > 0 };
+		return { empty: false, urls: r.urls, failed: report.failed > 0, saturated: r.stats.saturated };
 	} catch (e) {
 		if (e instanceof FatalError) {
 			console.error(`\n[crawl] ${e.message}`);
@@ -88,7 +91,7 @@ const advanceWatermark = (): void => {
 	console.error("Next: bun run src/pending.ts --top 20");
 };
 
-// search always re-queues the live month's page 1 (the month grows), so the queue never
+// search always re-queues the live window's page 1 (the window grows), so the queue never
 // reads as 0. Steady state instead: same URL set as the previous round means only that
 // unavoidable re-fetch is left — stop.
 let prev: string | null = null;
@@ -102,6 +105,11 @@ for (;;) {
 			"\n[crawl] fetch did not fully succeed (likely Cloudflare). Wait a few minutes, then rerun the same command.",
 		);
 		process.exit(1);
+	}
+	if (r.saturated.length) {
+		console.error(
+			`\n[crawl] WARNING: ${r.saturated.length} window(s) filled all 10 search pages — hits past 500 per window are invisible:\n\t${r.saturated.join("\n\t")}\nNarrow the term in data/terms.txt (e.g. add a #category word).`,
+		);
 	}
 	const same = r.urls.length > 0 && r.urls.join("\n") === prev;
 	prev = r.urls.join("\n");

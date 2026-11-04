@@ -18,7 +18,7 @@ bun run src/search.ts 招聘 内推码 招人 --new
 
 ```
 src/crawl.ts           AI entry point: bootstrap / daily loop
-src/search.ts          CLI: which month windows are missing (prints URLs)
+src/search.ts          CLI: which week windows are missing (prints URLs)
 src/fetch.ts           CLI: batch-fetch URLs through logged-in Chrome
 src/pending.ts         CLI: local disk vs server gaps
 src/digest.ts          CLI: one topic file → short text digest
@@ -37,12 +37,12 @@ line, `#` comments). There are exactly two entry points:
 
 ```bash
 bun run src/crawl.ts bootstrap   # first ever run, or months behind: full history, loop until drained
-bun run src/crawl.ts daily       # every day after: watermark month to now, loop until drained
+bun run src/crawl.ts daily       # every day after: watermark week to now, loop until drained
 ```
 
 Both loop search→fetch internally until nothing is left to fetch, so there is no urls.txt
 dance and no manual watermark echo: `daily` advances the watermark itself, but only when a
-round finished with 0 failed URLs. Non-zero exit means Cloudflare (or a broken month): read
+round finished with 0 failed URLs. Non-zero exit means Cloudflare (or a broken window): read
 the message, wait if told to, then run the SAME command again — the cache makes reruns free.
 When a green run finishes, the AI's job begins: judge (pending / digest / index, below).
 
@@ -79,25 +79,24 @@ bun run src/pending.ts --urls --include-new > urls.txt && bun run src/fetch.ts -
 Don't do it by hand: `bun run src/crawl.ts bootstrap` covers the whole grid for every term in
 `data/terms.txt`, looping until drained. What follows is how the plumbing underneath works.
 
-Slice by month, oldest to newest. Windows are whole UTC months on a fixed grid anchored at
-2023-01-01, so the same month always lands in the same file name: finished months are cached
-forever, and `--since` / `--until` / `--new` only pick grid months, they never shift keys.
-Only the current (unfinished) month is re-fetched and overwritten every run, because it grows.
+Slice by week, oldest to newest. Windows are 7 whole UTC days on a fixed grid anchored at
+2023-01-01, so the same week always lands in the same file name: finished weeks are cached
+forever, and `--since` / `--until` / `--new` only pick grid weeks, they never shift keys.
+Only the current (unfinished) week is re-fetched and overwritten every run, because it grows.
 
 ```bash
 bun run src/search.ts 招聘 招人 求职 面经 hc > urls.txt && bun run src/fetch.ts --file urls.txt
 ```
 
-A window that returns a full 50 queues its next page by itself, up to page 40. A month that
-would need page 41 is too big for one window: the program exits 1 and that month must be
-split by hand (`--since`/`--until` halves). If it dies, run the same command again — cached
-months are skipped, only what is missing goes out.
+A window that returns a full 50 queues its next page by itself, up to page 10 — the server
+rejects page > 10 with a 400, so a window reaching page 11 is drained by force. Weekly
+windows keep hits low enough that this never bites. If it dies, run the same command again —
+cached weeks are skipped, only what is missing goes out.
 
-`--new` monitors the daily loop. It fetches from the month of the watermark in
-`data/search-state.json` (no file yet: last month) to now. A stale watermark costs nothing —
-the months in between are already cached — but if it is a full month or more old, `search.ts`
-warns. `crawl.ts daily` advances the watermark itself; a manual run must do it by hand
-(the exact line is printed on stderr):
+`--new` monitors the daily loop. It fetches from the week of the watermark in
+`data/search-state.json` (no file yet: last week) to now. A stale watermark costs nothing —
+the weeks in between are already cached. `crawl.ts daily` advances the watermark itself; a
+manual run must do it by hand (the exact line is printed on stderr):
 
 ```bash
 bun run src/search.ts 招聘 --new > urls.txt && bun run src/fetch.ts --file urls.txt
@@ -166,7 +165,7 @@ It exists for one reason: stop re-asking what was already asked and truly has no
 - **`post_number=N` returns what comes after N**, N itself excluded.
 - **Do not add `order:latest`**. Measured: it re-sorts by recency and weak matches push out real hits — `内推` normally returns 39 hits, with `order:latest` only 1.
 - **Chinese keywords vary a lot in quality.** `招聘`: 35 of 50 results really contain the word. `内推`: 1 of 50, because the tokenizer also counts `推`. Before searching, check `帖子含词/50` in the search file name; below half, switch the word or add a `#非我莫属` category filter. `search.ts` now prints this ratio per term on stderr.
-- **Monthly grid, not weekly.** Measured 2026-10: a busy month (招人, Sep 2026) is 70 hits = 2 pages; a quiet one (Jan 2024) is 9 hits = 1 page. Weekly would have been 4–5 requests for the same span, and 8 of the first 12 weekly runs came back full-50. Search reaches back to 2023 (Jan 2023 = 1 hit, nothing pruned).
+- **Weekly grid, not monthly.** First measured 2026-10 (monthly): a busy month (招人, Sep 2026) is 70 hits = 2 pages, so monthly looked cheaper. But Discourse rejects search `page > 10` with a 400 — measured live: `page parameter must not be greater than 10`. 内推 in Oct 2026 alone filled 10 pages of 50, so every hit past 500 was silently unreachable. Weekly windows keep each window's hit count well under the 500 cap. Cost: more requests for the same span (4–5 per month instead of 1–2).
 - **`__dirname` under `bun run` is the script's own directory.** All data paths come from `src/lib/paths.ts`, which resolves `ROOT` two levels up from `src/lib` — never join `data/` from a script's own `__dirname`.
 - **Deleted posts leave a permanent gap.** `pending.ts` confirms once against the post number table and remembers it, so it never loops forever on a post that isn't there.
 - **The post number table is only valid at that height.** You can't trust "we asked last time" forever, or new replies arriving after the highest post was deleted would stay invisible. So the tail is re-asked every time, against the server's current highest post number.

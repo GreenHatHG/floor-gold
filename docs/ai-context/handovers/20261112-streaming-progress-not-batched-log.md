@@ -52,3 +52,4 @@ zero output for the entire round and could not tell "working slowly" from "hung"
 - Keep stdout for the deliverable/summary; diagnostics and progress go to stderr.
 - If a long run is backgrounded, ALWAYS tail its log before issuing any `playwright-cli` command against the attached tab.
 - ALWAYS run `npm install` before `npm run check` in this repo; call tsc/biome only through the npm scripts, never bare `npx tsc`.
+- NEVER poll a long-running command with repeated `sleep N; tail log` wake-ups. Each wake burns agent tokens and a loop-guard can kill the poll. ALWAYS launch long commands with `--wait-for-done` and block on the `crawl-done <exit>` line instead (see the wait-for-done handover).

@@ -7,6 +7,8 @@ Usage:
   bun run src/crawl.ts bootstrap    full history, all terms in data/terms.txt, loop until drained
   bun run src/crawl.ts daily        from the watermark week to now, loop until drained,
                                     auto-advance the watermark only when 0 urls failed
+  ... --wait-for-done              any command + prints "crawl-done <exit>" to stdout right
+                                    before exiting, so a watcher can block until completion
 
 Rules for the AI:
   - First ever run, or months behind: bootstrap. Otherwise: daily.
@@ -31,10 +33,12 @@ import { STATE, TERMS, URLS_FILE } from "./lib/paths";
 const argv = process.argv.slice(2);
 if (argv.includes("-h") || argv.includes("--help")) showHelp(HELP);
 let cmd = "";
+let waitForDone = false;
 {
-	const { opts, args } = parseOrExit(argv, {}, "crawl.ts");
-	if (opts.new || opts.since !== undefined || opts.until !== undefined || opts.file) {
-		console.error("crawl.ts takes no options. Terms live in data/terms.txt.");
+	const { opts, args } = parseOrExit(argv, { "wait-for-done": "flag" }, "crawl.ts");
+	waitForDone = !!opts["wait-for-done"];
+	if (opts.since !== undefined || opts.until !== undefined || opts.file || opts.new) {
+		console.error("crawl.ts takes no options except --wait-for-done. Terms live in data/terms.txt.");
 		process.exit(2);
 	}
 	if (args.length !== 1 || !"bootstrap daily".split(" ").includes(args[0])) {
@@ -82,10 +86,19 @@ const plan = async (
 	} catch (e) {
 		if (e instanceof FatalError) {
 			console.error(`\n[crawl] ${e.message}`);
+			waitMarker();
 			process.exit(1);
 		}
 		throw e;
 	}
+};
+
+// --wait-for-done: without it the agent polls with sleep loops, burning tokens every wake-up.
+// One machine-readable line on stdout lets a watcher block until the very end. Every exit path
+// calls this, so the marker also covers failure exits (exit 1), not just the drained exit 0.
+const waitMarker = (): void => {
+	if (!waitForDone) return;
+	console.log(`crawl-done ${process.exitCode ?? 0}`);
 };
 
 const advanceWatermark = (): void => {
@@ -110,6 +123,7 @@ for (;;) {
 		console.error(
 			"\n[crawl] fetch did not fully succeed (likely Cloudflare). Wait a few minutes, then rerun the same command.",
 		);
+		waitMarker();
 		process.exit(1);
 	}
 	if (r.saturated.length) {
@@ -125,12 +139,15 @@ for (;;) {
 	}
 	if (rounds >= 60) {
 		console.error("\n[crawl] still not drained after 60 rounds — abnormal, stop and investigate manually.");
+		waitMarker();
 		process.exit(1);
 	}
 }
 
 if (cmd === "daily") {
 	advanceWatermark();
+	waitMarker();
 } else {
 	console.error(`Next: bun run src/crawl.ts daily`);
+	waitMarker();
 }

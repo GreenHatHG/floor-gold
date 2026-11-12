@@ -1,6 +1,6 @@
 ---
 created_at: 2026-10-27
-updated_at: 2026-11-04
+updated_at: 2026-11-12
 topic: playwright-cli-attach-batch-fetch-ratelimit
 status: resolved
 affected_modules: [fetch.js, chrome-extension-attach, rate-limiter, cloudflare-block-handling]
@@ -40,6 +40,8 @@ Two separate problems live here: (a) how to batch many JSON fetches through that
   - **Failure Reason**: Fine for short runs, but the `daily` crawl loop fires hundreds of requests and Cloudflare 429s arrived repeatedly mid-run (round 3 of the first daily crawl blocked, then again on later rounds). Measured blocks also happen AFTER ~30+ clean requests, not just at high burst rate. New default: `2/10000`, `--conc 1` — the user accepted slow crawls; blocks are the real cost, not time.
 
 - **Attempt**: Treat a Discourse 400 as a Cloudflare-style "wait and rerun" failure.
+- **Attempt (2026-11-12, real incident)**: Apply the cold-start remedy `goto https://linux.do` while a crawl was fetching — the `eval` batch was in flight inside that tab.
+  - **Failure Reason**: The page navigated under the eval, the execution context was destroyed, and the whole batch died with `Execution context was destroyed, most likely because of a navigation`; crawl exited 1. The remedy is for cold start ONLY — before a run or after it exits, never during one. The existing pitfall already said a navigation loses the result file; what was missing was the operational rule about WHEN the goto is allowed, and the agent repeated the remedy mid-run.
 - **Attempt**: Probe the true limit by firing a 25-request sequence at 2 s intervals to map where it breaks.
   - **Failure Reason**: This is someone's real account. Deliberately provoking a challenge to satisfy curiosity is not acceptable, and the previous 85-request run had already produced the answer. The user stopped it. **Do not run rate-limit probes against a live logged-in account.** Read the failure from a normal run instead: status code, whether the body is HTML, how long silence takes to clear it.
 - **Attempt**: Read the fetch error message as literal truth (`playwright-cli failed: Execution context was destroyed, most likely because of a navigation`).
@@ -120,3 +122,4 @@ Two separate problems live here: (a) how to batch many JSON fetches through that
 - ALWAYS persist the URLs that did not land (`data/todo.txt`). A stopped batch must be resumable, not lost.
 - NEVER run rate-limit probes against a live logged-in account. Learn the limit from a real run's failure, or ask.
 - NEVER treat an HTTP `200` as proof the fetch worked: a challenge page can arrive with a non-JSON body. Parse, and fail loudly when parsing fails.
+- NEVER drive the attached tab (goto, click, reload) while a fetch/crawl is running. All fetches run inside that tab via `eval`; one navigation kills the whole batch. Cold-start goto BEFORE starting a run or after it exits.

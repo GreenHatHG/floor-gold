@@ -50,7 +50,9 @@ bun run src/crawl.ts daily       # every day after: watermark week to now, loop 
 
    If fetches then fail with `TypeError: Failed to fetch` right after attaching, open
    `https://linux.do` once in the attached tab (`playwright-cli -s=chrome goto https://linux.do`),
-   then rerun. Both failures look fatal but are just cold-start.
+   then rerun. Both failures look fatal but are just cold-start. Run the goto BEFORE starting
+   a crawl (or after it exits) — never while one is running. Fetches run inside that tab via
+   `eval`; navigating it mid-run kills the whole batch with `Execution context was destroyed`.
 
 2. **On exit 1, read the message, then rerun the SAME command.** Two different causes:
    - 429/403 or `Failed to fetch` → Cloudflare. Wait a few minutes, rerun. Cache makes

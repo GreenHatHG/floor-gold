@@ -95,6 +95,9 @@ export interface FetchOptions {
 	conc: number;
 	rateN: number;
 	rateWindow: number;
+	// bootstrap/daily run for hours at 2 req/10s; entries need a live heartbeat,
+	// not a full log dumped only when the whole round ends.
+	onProgress?: (line: string) => void;
 }
 
 export interface FetchReport {
@@ -149,6 +152,7 @@ export async function fetchAll(urlsIn: string[], o: FetchOptions): Promise<Fetch
 	const log: string[] = [];
 	const say = (line: string): void => {
 		log.push(line);
+		o.onProgress?.(line);
 	};
 	const noteRows: NoteRow[] = [];
 	const notDone: string[] = [];
@@ -159,6 +163,9 @@ export async function fetchAll(urlsIn: string[], o: FetchOptions): Promise<Fetch
 	for (let i = 0; i < urls.length; i += o.batch) {
 		const batchStart = Date.now();
 		const batch = urls.slice(i, i + o.batch);
+		o.onProgress?.(
+			`[batch ${Math.floor(i / o.batch) + 1}/${Math.ceil(urls.length / o.batch)}] sending ${batch.length} urls...`,
+		);
 		const { results, blocked } = runBatch(batch, o);
 		const got = new Set(results.map((r) => r.url));
 		for (const u of batch) {

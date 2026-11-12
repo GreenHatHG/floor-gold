@@ -75,8 +75,9 @@ try {
 		conc: numOf(opts, "conc", 2, 1),
 		rateN,
 		rateWindow,
+		// stream per-url results as they happen; a slow batch must not look hung
+		onProgress: (line) => console.error(line),
 	});
-	for (const line of report.log) console.log(line);
 	console.log(`\n${report.ok} ok, ${report.failed} failed, ${report.total} urls, ${report.seconds}s -> data/raw/`);
 	if (report.todo.length)
 		console.log(

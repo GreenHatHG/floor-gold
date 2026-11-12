@@ -68,8 +68,14 @@ const plan = async (
 		if (!r.urls.length) return { empty: true, urls: [], failed: false, saturated: r.stats.saturated };
 		console.error(`[crawl] ${r.stats.queued} urls queued, ${r.stats.cached} pages cached`);
 		// slowed 2026-11: 2/3000 tripped Cloudflare 429 repeatedly; slow is fine, blocks are not
-		const report = await fetchAll(r.urls, { session: "chrome", batch: 20, conc: 1, rateN: 2, rateWindow: 10000 });
-		for (const line of report.log) console.log(line);
+		const report = await fetchAll(r.urls, {
+			session: "chrome",
+			batch: 20,
+			conc: 1,
+			rateN: 2,
+			rateWindow: 10000,
+			onProgress: (line) => console.error(line),
+		});
 		console.log(`\n${report.ok} ok, ${report.failed} failed, ${report.total} urls, ${report.seconds}s -> data/raw/`);
 		if (report.todo.length) console.log(`${report.todo.length} failed to fetch, written to data/todo.txt`);
 		return { empty: false, urls: r.urls, failed: report.failed > 0, saturated: r.stats.saturated };

@@ -22,6 +22,11 @@ later review.
 TOKEN=$(head -1 ~/.pi/chrome-extension-token.txt) && PLAYWRIGHT_MCP_EXTENSION_TOKEN=$TOKEN playwright-cli attach --extension=chrome
 ```
 
+If fetches fail right after attaching, open `https://linux.do` once in the attached tab
+(`playwright-cli -s=chrome goto https://linux.do`) — cold-start quirk. Do this **before starting
+a crawl run**. While a crawl is running, never drive the attached tab: `eval` fetches run inside
+that page, and one navigation kills the whole batch with `Execution context was destroyed`.
+
 2. First run (or far behind):
 
 ```bash

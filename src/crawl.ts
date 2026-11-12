@@ -86,7 +86,7 @@ const plan = async (
 	} catch (e) {
 		if (e instanceof FatalError) {
 			console.error(`\n[crawl] ${e.message}`);
-			waitMarker();
+			waitMarker(1);
 			process.exit(1);
 		}
 		throw e;
@@ -96,9 +96,9 @@ const plan = async (
 // --wait-for-done: without it the agent polls with sleep loops, burning tokens every wake-up.
 // One machine-readable line on stdout lets a watcher block until the very end. Every exit path
 // calls this, so the marker also covers failure exits (exit 1), not just the drained exit 0.
-const waitMarker = (): void => {
+const waitMarker = (code: number): void => {
 	if (!waitForDone) return;
-	console.log(`crawl-done ${process.exitCode ?? 0}`);
+	console.log(`crawl-done ${code}`);
 };
 
 const advanceWatermark = (): void => {
@@ -123,7 +123,7 @@ for (;;) {
 		console.error(
 			"\n[crawl] fetch did not fully succeed (likely Cloudflare). Wait a few minutes, then rerun the same command.",
 		);
-		waitMarker();
+		waitMarker(1);
 		process.exit(1);
 	}
 	if (r.saturated.length) {
@@ -139,15 +139,15 @@ for (;;) {
 	}
 	if (rounds >= 60) {
 		console.error("\n[crawl] still not drained after 60 rounds — abnormal, stop and investigate manually.");
-		waitMarker();
+		waitMarker(1);
 		process.exit(1);
 	}
 }
 
 if (cmd === "daily") {
 	advanceWatermark();
-	waitMarker();
+	waitMarker(0);
 } else {
 	console.error(`Next: bun run src/crawl.ts daily`);
-	waitMarker();
+	waitMarker(0);
 }

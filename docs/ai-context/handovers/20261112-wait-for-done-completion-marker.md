@@ -25,8 +25,10 @@ signaled at completion.
   - **Failure Reason**: tsc fails: `Cannot find name 'opts'` — the block-scoped `opts` is out of scope at the bottom of the file. Hoist a plain `waitForDone` boolean out of the block.
 - **Attempt**: Define `waitMarker()` after the main loop but call it from inside the loop's exit paths.
   - **Failure Reason**: tsc fails: `Block-scoped variable used before its declaration`. Function declarations must sit above every call site; hoist next to `advanceWatermark()` before the loop.
-- **Attempt**: Mark only the success exit (end of main).
-  - **Failure Reason**: Real bootstrap runs exit 1 several times (transient `TypeError: Failed to fetch`, one `Extension disconnected`). If those exits print no marker, a watcher blocks forever. Every exit path must call `waitMarker()` before `process.exit()`.
+- **Attempt**: Let `waitMarker()` read `process.exitCode ?? 0` and call it before `process.exit(1)` on the failure paths.
+  - **Failure Reason**: `process.exitCode` is still undefined at call time, so every failure exit printed `crawl-done 0` — a watcher could not distinguish "drained" from "rerun needed" (caught by adversarial verification). Fix: pass the code explicitly, `waitMarker(1)` on failure paths, `waitMarker(0)` at end of main.
+- **Attempt**: Document the watcher as `cmd > run.log 2>&1 | while read ...`.
+  - **Failure Reason**: The stdout redirect and the pipe are mutually exclusive — the `while` loop receives nothing and blocks forever. Use `tee` in the middle: `cmd 2>&1 | tee run.log | while ...`.
 
 ## 3. Decision & Verified Solution
 
@@ -38,14 +40,19 @@ signaled at completion.
   hoisted `waitForDone` boolean; `waitMarker()` defined before the loop; called on all four exit paths; HELP documents the flag.
 - **Minimal Code / Command Reference**:
   ```ts
-  const waitMarker = (): void => {
+  // code is passed EXPLICITLY: on the failure paths waitMarker runs before process.exit,
+  // so reading process.exitCode there would print crawl-done 0 on a failed run.
+  const waitMarker = (code: number): void => {
     if (!waitForDone) return;
-    console.log(`crawl-done ${process.exitCode ?? 0}`);
+    console.log(`crawl-done ${code}`);
   };
+  // exit-1 paths: waitMarker(1); process.exit(1)   ·  end-of-main: waitMarker(0)
   ```
   ```bash
-  # agent-side: launch + block on completion, no polling
-  bun run src/crawl.ts daily --wait-for-done > run.log 2>&1 | while IFS= read -r l; do
+  # agent-side: launch + block on completion, no polling.
+  # NOTE: tee, not a plain redirect — `> run.log 2>&1 | while ...` feeds the pipe nothing
+  # (stdout goes to the file, the while loop never sees the marker) and deadlocks.
+  bun run src/crawl.ts daily --wait-for-done 2>&1 | tee run.log | while IFS= read -r l; do
     case "$l" in crawl-done*) break;; esac
   done
   ```
@@ -54,5 +61,5 @@ signaled at completion.
 ## 4. Hard Constraints for Future AI
 
 - ALWAYS run long commands (`crawl bootstrap|daily`, anything >5 min) with `--wait-for-done` and block on the `crawl-done` line. NEVER supervise with repeated sleep+tail wake-ups.
-- ALWAYS print the marker on EVERY exit path of a command promising it. A success-only marker deadlocks a watcher on the first recoverable failure (exit 1 rerun flow is normal here).
+- ALWAYS print the marker on EVERY exit path of a command promising it, WITH the correct code. A success-only marker deadlocks a watcher; a wrong-code marker (0 on failure) silently corrupts the watcher's next decision. Pass the code explicitly on failure paths — `process.exitCode` is not yet set before `process.exit(n)`.
 - Keep the marker on stdout (machine-readable), never stderr — stderr carries streaming diagnostics.

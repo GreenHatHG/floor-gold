@@ -92,6 +92,11 @@ than compensation. When judging job postings:
 - **Verdict values** for `index.jsonl` notes: `人味强 / 中性 / 人味弱 / 信号不足`, plus
   `避开` for red-flag ones. One line of evidence in every note, e.g.
   `org:公开留存6人4人在岗`. Single-source claims get `未验证` appended.
+- **City exclusion (user's standing requirement)**: the user will NOT consider jobs in
+  北京 / 上海 / 深圳 / 广州. Any posting based in one of these four cities gets verdict
+  `避开`, regardless of how strong its human-culture signals are. Remote jobs are always
+  acceptable (note the base city only for reference). City ambiguity (e.g. "可北京驻场/远程")
+  stays judgeable if a non-excluded option exists — note the constraint.
 - Cached posts cover only the first ~20 floors; a `posts_count` far above 20 means unread
   evidence may exist — say so in the note rather than guessing.
 

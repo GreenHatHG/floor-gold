@@ -74,6 +74,27 @@ bun run src/crawl.ts daily       # every day after: watermark week to now, loop 
    Append-only, last line wins. Watch crawl stderr for `WARNING ... filled all 10 search
    pages` — a term that saturates windows needs narrowing in `data/terms.txt`.
 
+### Judging criteria: human-culture first (the user's standing requirement)
+
+The user's #1 filter is companies that **把人当人** (treat people like humans) — NOT salary,
+NOT prestige. The user has been gap-ed for a long time; a humane first job back matters more
+than compensation. When judging job postings:
+
+- **Positive signals** (evidence in posts/replies, cite post numbers in the note): public
+  retention data ("入职X人X人在岗"), "不会裁人" written into the JD, explicit overtime pay,
+  no-algorithm-interview promises ("不考手撕"), OP answering salary questions directly,
+  OP helping candidates track progress, transparent company name + salary in the JD.
+- **Red flags**: OP calls the job "牛马岗" even jokingly; same role reposted with LOWER pay;
+  "一周上手" style no-training expectations; salary range absurdly wide (40–100K);
+  JD is only an image + personal WeChat; OP dodges the company name or salary question;
+  commenters identify the "外企" as 外包 (outsourcing body shop); reply silence after direct
+  salary questions is itself a signal.
+- **Verdict values** for `index.jsonl` notes: `人味强 / 中性 / 人味弱 / 信号不足`, plus
+  `避开` for red-flag ones. One line of evidence in every note, e.g.
+  `org:公开留存6人4人在岗`. Single-source claims get `未验证` appended.
+- Cached posts cover only the first ~20 floors; a `posts_count` far above 20 means unread
+  evidence may exist — say so in the note rather than guessing.
+
 4. **One-off gap checks** (not part of the daily loop):
 
    ```bash

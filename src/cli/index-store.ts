@@ -45,3 +45,9 @@ export function appendNoteRows(rows: NoteRow[]): void {
 	if (!rows.length) return;
 	fs.appendFileSync(NOTES, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
 }
+
+// Callers pass the full merged row: the file is append-only and readIndex merges line by
+// line, but only a self-contained line survives a corrupted earlier one.
+export function appendIndexRow(row: IndexRow): void {
+	fs.appendFileSync(INDEX, `${JSON.stringify({ at: new Date().toISOString(), ...row })}\n`);
+}

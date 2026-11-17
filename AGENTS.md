@@ -65,13 +65,17 @@ bun run src/crawl.ts daily       # every day after: watermark week to now, loop 
 3. **Judge after a green run** — this is the agent's real job:
 
    ```bash
-   bun run src/pending.ts --top=20                       # unopened / has new replies
+   bun run src/pending.ts --top=20                       # unopened / has new replies / reading in progress
    bun run src/digest.ts <topic_id> --chars=200          # cheap summary, never fetches
    bun run src/digest.ts <topic_id> --full 43            # whole text of one post
-   echo '{"at":"'"$(date -u +%FT%TZ)"'","id":123456,"read_upto":45,"verdict":"在看","note":"上海后端,远程,要简历"}' >> data/index.jsonl
+   bun run src/catchup.ts <topic_id>                     # pull floors 21+ the local copy is missing
+   bun run src/mark.ts <topic_id> --upto 45 --verdict 在看 --note "上海后端,远程,要简历"
    ```
 
-   Append-only, last line wins. Watch crawl stderr for `WARNING ... filled all 10 search
+   A first `/t/<id>.json` only returns ~20 floors; `posts_count` far above 20 means unread
+   evidence may exist — run `catchup.ts` before judging, then `digest --new` after
+   `mark.ts --upto` to see only what you have not read. Append-only, last line wins.
+   Watch crawl stderr for `WARNING ... filled all 10 search
    pages` — a term that saturates windows needs narrowing in `data/terms.txt`.
 
 ### Judging criteria: human-culture first (the user's standing requirement)
@@ -97,8 +101,8 @@ than compensation. When judging job postings:
   `避开`, regardless of how strong its human-culture signals are. Remote jobs are always
   acceptable (note the base city only for reference). City ambiguity (e.g. "可北京驻场/远程")
   stays judgeable if a non-excluded option exists — note the constraint.
-- Cached posts cover only the first ~20 floors; a `posts_count` far above 20 means unread
-  evidence may exist — say so in the note rather than guessing.
+- A first `/t/<id>.json` covers only the first ~20 floors; `catchup.ts` pulls the rest.
+  Remaining holes after a drained catch-up are deleted posts — say so in the note rather than guessing.
 
 4. **One-off gap checks** (not part of the daily loop):
 

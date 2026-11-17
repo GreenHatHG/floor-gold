@@ -71,6 +71,20 @@ const allUrls = [
 	...changed.flatMap((c) => c.urls),
 	...(includeNew ? fresh.filter((t) => !skipped(t.id)).map((t) => `/t/${t.id}.json`) : []),
 ];
+
+// Judged topics whose cursor lags the highest floor we know of — the ones where reading
+// stopped early (a first /t/<id>.json only returns ~20 posts).
+const watched = [...local.entries()]
+	.map(([id, l]) => ({ id, l, rec: idx.get(id) || {} }))
+	.filter(
+		({ id, l, rec }) =>
+			rec.read_upto != null &&
+			!skipped(id) &&
+			rec.read_upto < Math.max(l.highest, l.max) &&
+			!changed.some((c) => c.id === id),
+	)
+	.sort((a, b) => (b.rec.read_upto || 0) - (a.rec.read_upto || 0));
+
 if (urlsOnly) {
 	if (allUrls.length) console.log(allUrls.join("\n"));
 	appendNoteRows(noteRows);
@@ -94,6 +108,17 @@ if (fresh.length) {
 		console.log(`${mark}${t.id}  ${md(t.last)}  c${t.category_id || "?"}  ${t.title || "(no title)"}`);
 	}
 	if (fresh.length > TOP) console.log(`… and ${fresh.length - TOP} more, use --top= to see more`);
+}
+
+if (watched.length) {
+	console.log(`\n=== reading in progress (${watched.length}) ===`);
+	for (const w of watched.slice(0, TOP)) {
+		console.log(
+			`${w.id}  read #${w.rec.read_upto} of ${Math.max(w.l.highest, w.l.max)}  ${w.l.title || "(no title)"}`,
+			`\n    catch up: bun run src/catchup.ts ${w.id}`,
+		);
+	}
+	if (watched.length > TOP) console.log(`… and ${watched.length - TOP} more, use --top= to see more`);
 }
 
 if (changed.length) {

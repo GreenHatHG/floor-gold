@@ -54,6 +54,7 @@ export interface IdsDoc {
 }
 
 export interface IndexRow {
+	at?: string;
 	id?: number;
 	read_upto?: number;
 	verdict?: string;

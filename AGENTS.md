@@ -69,7 +69,7 @@ bun run src/crawl.ts daily       # every day after: watermark week to now, loop 
    bun run src/digest.ts <topic_id> --chars=200          # cheap summary, never fetches
    bun run src/digest.ts <topic_id> --full 43            # whole text of one post
    bun run src/catchup.ts <topic_id>                     # pull floors 21+ the local copy is missing
-   bun run src/mark.ts <topic_id> --upto 45 --verdict 在看 --note "上海后端,远程,要简历"
+   bun run src/mark.ts <topic_id> --upto 45 --verdict 中性 --note "上海后端,远程,要简历"
    ```
 
    A first `/t/<id>.json` only returns ~20 floors; `posts_count` far above 20 means unread
@@ -94,8 +94,10 @@ than compensation. When judging job postings:
   commenters identify the "外企" as 外包 (outsourcing body shop); reply silence after direct
   salary questions is itself a signal.
 - **Verdict values** for `index.jsonl` notes: `人味强 / 中性 / 人味弱 / 信号不足`, plus
-  `避开` for red-flag ones. One line of evidence in every note, e.g.
-  `org:公开留存6人4人在岗`. Single-source claims get `未验证` appended.
+  `避开` for red-flag ones. The verdict judges hiring signals only — whether you have read
+  all floors is `read_upto` vs the topic's highest floor (`pending.ts` prints those as
+  "reading in progress"); never use a verdict to mean "not fully fetched yet". One line of
+  evidence in every note, e.g. `org:公开留存6人4人在岗`. Single-source claims get `未验证` appended.
 - **City exclusion (user's standing requirement)**: the user will NOT consider jobs in
   北京 / 上海 / 深圳 / 广州. Any posting based in one of these four cities gets verdict
   `避开`, regardless of how strong its human-culture signals are. Remote jobs are always

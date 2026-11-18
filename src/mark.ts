@@ -5,11 +5,11 @@ const HELP = `mark.ts — record what you read into data/index.jsonl (append-onl
 
 Usage:
   bun run src/mark.ts <topic_id> --upto 45
-  bun run src/mark.ts <topic_id> --upto 45 --verdict 在看 --note "上海后端,远程,org:公开留存6人4人在岗"
+  bun run src/mark.ts <topic_id> --upto 45 --verdict 中性 --note "上海后端,远程,org:公开留存6人4人在岗"
 
 Options:
   --upto N         highest post number you read (required; digest.ts --new only shows posts above it)
-  --verdict VALUE  free text, e.g. 在看 / skip / 避开 / 人味强 / 中性 / 人味弱 / 信号不足
+  --verdict VALUE  free text, e.g. 避开 / 人味强 / 中性 / 人味弱 / 信号不足 (whether floors are read is --upto, not the verdict)
   --note VALUE     one line of evidence, e.g. "org:公开留存6人4人在岗"
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 

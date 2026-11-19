@@ -11,10 +11,12 @@ Options:
   --upto N         highest post number you read (required; digest.ts --new only shows posts above it)
   --verdict VALUE  free text, e.g. 避开 / 人味强 / 中性 / 人味弱 / 信号不足 (whether floors are read is --upto, not the verdict)
   --note VALUE     one line of evidence, e.g. "org:公开留存6人4人在岗"
+  --pub YYYY-MM-DD publish date of the posting itself, shown next to verdicts so stale
+                   openings are visible at a glance (e.g. "避开了但那是5月的事")
   --opt=VALUE works too. A bare -- ends options. Unknown options are errors.
 
 Only the given fields change; the rest of your judgement on that topic is carried forward
-by the last-line-wins read. Exit codes: 0 written · 1 no prior record and --verdict/--note
+by the last-line-wins read. Exit codes: 0 ok · 1 no prior record and --verdict/--note/--pub
 given without --upto (a verdict without a cursor makes --new wrong) · 2 bad arguments
 `;
 
@@ -23,7 +25,7 @@ import { numOf, optOf, parseOrExit, showHelp, showUsage } from "./lib/cli";
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) showHelp(HELP);
-const { opts, args } = parseOrExit(argv, { upto: "value", verdict: "value", note: "value" }, "mark.ts");
+const { opts, args } = parseOrExit(argv, { upto: "value", verdict: "value", note: "value", pub: "value" }, "mark.ts");
 
 const id = Number(args[0]?.replace(/\D/g, ""));
 if (!args[0] || !id || String(id) !== args[0].replace(/\D/g, "")) {
@@ -32,23 +34,30 @@ if (!args[0] || !id || String(id) !== args[0].replace(/\D/g, "")) {
 }
 const verdict = optOf(opts, "verdict");
 const note = optOf(opts, "note");
+const pub = optOf(opts, "pub");
+if (pub && !/^\d{4}-\d{2}-\d{2}$/.test(pub)) {
+	console.error(`--pub wants YYYY-MM-DD, got "${pub}"`);
+	process.exit(2);
+}
 const uptoRaw = opts.upto;
 
 // a verdict without a cursor makes digest --new silently skip or repeat posts
-if (!uptoRaw && (verdict || note) && !readIndex().has(id)) {
+if (!uptoRaw && (verdict || note || pub) && !readIndex().has(id)) {
 	console.error(`topic ${id} has no record yet: give --upto first, so --new knows where you are.`);
 	process.exit(1);
 }
-const row: { id: number; read_upto?: number; verdict?: string; note?: string } = { id };
+const row: { id: number; read_upto?: number; verdict?: string; note?: string; pub?: string } = { id };
 if (uptoRaw) row.read_upto = numOf(opts, "upto", 0, 0);
 if (verdict) row.verdict = verdict;
 if (note) row.note = note;
+if (pub) row.pub = pub;
 
 if (Object.keys(row).length === 1) showUsage(HELP, "mark.ts");
 appendIndexRow(row);
 
 const prev = readIndex().get(id) || {};
 const bits = [`topic ${id}`, `read_upto ${row.read_upto ?? prev.read_upto ?? "-"}`];
+if (row.pub ?? prev.pub) bits.push(`pub: ${row.pub ?? prev.pub}`);
 if (row.verdict ?? prev.verdict) bits.push(`verdict: ${row.verdict ?? prev.verdict}`);
 if (row.note ?? prev.note) bits.push(`note: ${row.note ?? prev.note}`);
 console.log(`recorded: ${bits.join(" · ")}`);

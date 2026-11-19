@@ -22,6 +22,7 @@ Summary marks:
   [skip] you marked it skip or noise    [done] judged, not skipped
   new replies    gap-fill a gap inside posts you already hold
   (waiting on post id table) the id table must come back first; those posts are fetched on the next run
+  updated-topic lines also show [posted YYYY-MM-DD] (recorded via mark.ts --pub) and [verdict] when known
 
 Reads data/raw/{topic,search,list,tag,site}/*.json, data/raw/ids/*.json (the post number
 tables that say which holes are already explained), data/index.jsonl (one judgement per
@@ -125,6 +126,9 @@ if (changed.length) {
 	console.log(`\n=== updated (${changed.length}) ===`);
 	for (const c of changed) {
 		const bits = [`${c.id}`, md(c.last), c.title || "", `${c.kind} ${c.from}-${c.to}`];
+		const v = idx.get(c.id);
+		if (v?.pub) bits.push(`[posted ${v.pub}]`);
+		if (v?.verdict) bits.push(`[${v.verdict}]`);
 		if (c.waitingOn) bits.push(`(waiting on ${c.waitingOn})`);
 		console.log(bits.join("  "));
 		for (const u of c.urls) console.log(`    ${u}`);

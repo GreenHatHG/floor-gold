@@ -59,6 +59,7 @@ export interface IndexRow {
 	read_upto?: number;
 	verdict?: string;
 	note?: string;
+	pub?: string;
 }
 
 export type NoteRow =

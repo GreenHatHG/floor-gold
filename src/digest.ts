@@ -22,7 +22,8 @@ Options:
 Output: one line per post, #number user date text. The header shows title, post count, the
 highest post number when it differs from the count (a delete makes them differ), missing
 post numbers, last reply date, how far you already read, and your last verdict from
-data/index.jsonl.
+data/index.jsonl — with the posting's own publish date appended when one was recorded
+via mark.ts --pub, so stale openings are visible at a glance.
 
 No local copy means fetch first: bun run src/fetch.ts "/t/<id>.json"
 
@@ -102,7 +103,8 @@ console.log(
 	`local ${posts.length} posts · missing ${gapText} · last reply ${md(topic.last_posted_at)}` +
 		(readUpto ? ` · read up to #${readUpto}` : ""),
 );
-if (rec.verdict || rec.note) console.log(`last verdict: ${rec.verdict || "-"} ${rec.note || ""}`.trim());
+if (rec.verdict || rec.note || rec.pub)
+	console.log(`last verdict: ${rec.verdict || "-"} ${rec.note || ""}`.trim(), rec.pub ? `(posted ${rec.pub})` : "");
 console.log("-".repeat(60));
 
 // posts
